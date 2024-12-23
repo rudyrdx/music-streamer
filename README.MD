@@ -28,3 +28,21 @@ music upload or stream commands can come from the frontend and then frontend wil
 now regarding regional scalability:
 lets say in a region there will be only one service of each type.
 but if the load increases, we can deduplicate the that region's services and bind them behind a load balancer layer to distribute load.
+
+## Plans
+User has to login inorder to listen to music.
+UI where the user can listen to music, manage playlist
+listen to music means:
+request a song, so that it can be streamed.
+manage playlist means C R U D playlists of that user
+
+how will the music streamer know whether the music request is from an authenticated user?
+
+~~on receiving a request from a user we would need to check first, the user is authenticated, but as our streaming service is running separately from the frontend service, in order to check whether this request is from a genuine and authenticated user, on receiving the request~~ 
+- ~~the streamer service periodically sends requests to the frontend service to confirm this user's status~~
+- ~~or the streamer service will check the current status of the user but that will require a database call to the frontend service which defeats the whole purpose~~ 
+- ~~is there a way to be established between the frontend service and streamer service that the request b/w the services is genuine preventing malicious attempts?~~
+
+we can use the TOTP approach with a single use policy to prevent missuses of our streamer and only the frontend has the logic to reproduce it.
+
+![alt text](<Pasted image 20241223111905.png>)

@@ -55,3 +55,6 @@ after processing, the file's chunks ids will be saved in the chunk table and ref
 streamer
 table will store reference ...
 i think the streamer and chunker have to be one. the chunker will be responsible for chunking and streaming the music.
+
+or ill have to setup the orchestrator to take in the data from chunker and provide it to the
+streamer service's database or the streamer service can directly request and cache it in its edge database

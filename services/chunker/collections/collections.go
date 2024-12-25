@@ -7,13 +7,20 @@ import (
 	uploadedfiles "github.com/rudyrdx/music-streamer/chunker/collections/UploadedFiles"
 )
 
-func SetupCollections(AppInstance *pocketbase.PocketBase) {
+func SetupCollections(AppInstance *pocketbase.PocketBase) error {
 
 	//uploadFiles table
 	_, err := AppInstance.FindCollectionByNameOrId("UploadedFiles")
 	if err != nil {
-		uploadedfiles.CreateCollection()
+		err := AppInstance.Save(uploadedfiles.CreateCollection())
+		if err != nil {
+			// fmt.Println("Error saving collection UploadedFiles")
+			return err
+		}
 	} else {
-		fmt.Println("Collection UploadedFiles exists ✓")
+		fmt.Println("Collection UploadedFiles exists")
 	}
+
+	
+	return nil
 }

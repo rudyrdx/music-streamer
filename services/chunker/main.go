@@ -14,6 +14,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/rudyrdx/music-streamer/chunker/collections"
+	"github.com/rudyrdx/music-streamer/chunker/handlers"
 )
 
 func main() {
@@ -26,18 +27,7 @@ func main() {
 		return be.Next()
 	})
 
-	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
-		// registers new "GET /hello" route
-		se.Router.GET("/hello", func(re *core.RequestEvent) error {
-			return re.String(200, "Hello world!")
-		})
-
-		se.Router.POST("/file", func(e *core.RequestEvent) error {
-			return HandleUpload(e)
-		})
-
-		return se.Next()
-	})
+	app.OnServe().BindFunc(handlers.SetupHandlers)
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
@@ -74,3 +64,7 @@ func HandleUpload(re *core.RequestEvent) error {
 
 	return nil
 }
+
+//any incoming requests to this chunker service will be expected to have
+//the totp token in header, ensuring that the request is coming from a valid source
+//or, if we are using server side rendering, why dont we use rpc ?

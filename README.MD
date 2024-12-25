@@ -46,3 +46,12 @@ how will the music streamer know whether the music request is from an authentica
 we can use the TOTP approach with a single use policy to prevent missuses of our streamer and only the frontend has the logic to reproduce it.
 
 ![alt text](<Pasted image 20241223111905.png>)
+
+Database design:
+chunker
+UploadFiles table where all files uploaded will go and processed status will be saved
+after processing, the file's chunks ids will be saved in the chunk table and reference will be added to the UploadFiles table
+
+streamer
+table will store reference ...
+i think the streamer and chunker have to be one. the chunker will be responsible for chunking and streaming the music.

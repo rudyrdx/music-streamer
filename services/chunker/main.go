@@ -13,10 +13,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/rudyrdx/music-streamer/chunker/collections"
 )
 
 func main() {
 	app := pocketbase.New()
+
+	app.OnServe().BindFunc(func(be *core.ServeEvent) error {
+
+		collections.SetupCollections(app)
+
+		return be.Next()
+	})
 
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
 		// registers new "GET /hello" route

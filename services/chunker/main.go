@@ -7,6 +7,7 @@ package main
 //tell the orchestrator that the file has been created and chunked
 //then the orchestrator will pull the file and save it in mainDB
 import (
+	"fmt"
 	"log"
 
 	"github.com/pocketbase/pocketbase"
@@ -26,6 +27,30 @@ func main() {
 	})
 
 	app.OnServe().BindFunc(handlers.SetupHandlers)
+
+	app.Cron().MustAdd("Chunk", "*/1 * * * *", func() {
+
+		fmt.Println("Processing records")
+
+		records, err := app.FindRecordsByFilter(
+			"UploadedFiles",     // collection
+			"processed = False", // filter
+			"-created",          // sort
+			2,                   // limit
+			0,                   // offset
+		)
+		if err != nil {
+			return
+		}
+
+		if len(records) < 1 {
+			return
+		}
+
+		fmt.Println("Processing records", len(records))
+		// for _, record := range records {
+		// }
+	})
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)

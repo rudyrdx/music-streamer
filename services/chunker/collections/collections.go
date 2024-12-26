@@ -1,15 +1,13 @@
 package collections
 
 import (
-	"fmt"
-
 	"github.com/pocketbase/pocketbase"
+	chunkedfiles "github.com/rudyrdx/music-streamer/chunker/collections/ChunkedFiles"
 	uploadedfiles "github.com/rudyrdx/music-streamer/chunker/collections/UploadedFiles"
 )
 
 func SetupCollections(AppInstance *pocketbase.PocketBase) error {
 
-	//uploadFiles table
 	_, err := AppInstance.FindCollectionByNameOrId("UploadedFiles")
 	if err != nil {
 		err := AppInstance.Save(uploadedfiles.CreateCollection())
@@ -17,10 +15,16 @@ func SetupCollections(AppInstance *pocketbase.PocketBase) error {
 			// fmt.Println("Error saving collection UploadedFiles")
 			return err
 		}
-	} else {
-		fmt.Println("Collection UploadedFiles exists")
 	}
 
-	
+	_, err = AppInstance.FindCollectionByNameOrId("ChunkedFiles")
+	if err != nil {
+		err := AppInstance.Save(chunkedfiles.CreateCollection())
+		if err != nil {
+			// fmt.Println("Error saving collection UploadedFiles")
+			return err
+		}
+	}
+
 	return nil
 }

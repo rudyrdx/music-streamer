@@ -6,6 +6,7 @@ import (
 
 func CreateCollection() *core.Collection {
 	collection := core.NewBaseCollection("UploadedFiles")
+	collection.Id = "UFTable123"
 
 	collection.Fields.Add(&core.TextField{
 		Name:     "file_path",
@@ -24,8 +25,7 @@ func CreateCollection() *core.Collection {
 	})
 
 	collection.Fields.Add(&core.BoolField{
-		Name:     "processed",
-		Required: true,
+		Name: "processed",
 	})
 
 	collection.Fields.Add(&core.JSONField{

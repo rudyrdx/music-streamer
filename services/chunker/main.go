@@ -32,9 +32,7 @@ func main() {
 	})
 
 	app.OnServe().BindFunc(handlers.SetupHandlers)
-
 	
-
 	app.Cron().MustAdd("Chunk", "*/1 * * * *", func() {
 
 		records, err := app.FindRecordsByFilter(

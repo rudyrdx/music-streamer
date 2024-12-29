@@ -12,7 +12,7 @@ import (
 	"github.com/rudyrdx/music-streamer/chunker/helpers"
 )
 
-func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
+func HandleStreamerCached(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
 
 	rnge := e.Request.Header.Get("Range")
 	param := e.Request.URL.Query().Get("id")
@@ -20,10 +20,15 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.C
 		return e.String(400, "Invalid request")
 	}
 
-	fmt.Println("Range: ", rnge)
+	// s := time.Now()
 
-	col, _ := app.FindCollectionByNameOrId("UploadedFiles")
+	col, err := helpers.LookupFromCacheOrDB[*core.Collection](c, "UploadedFiles", func() (*core.Collection, error) {
+		return app.FindCollectionByNameOrId("UploadedFiles")
+	}, cache.DefaultExpiration)
 
+	if err != nil {
+		return e.String(500, "Failed to find collection")
+	}
 	record, err := helpers.LookupFromCacheOrDB[*core.Record](c, param, func() (*core.Record, error) {
 		return app.FindRecordById(col, param)
 	}, cache.DefaultExpiration)
@@ -33,10 +38,6 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.C
 
 	file_path := record.Get("file_path").(string)
 	file_size := record.Get("file_size").(float64)
-
-	if !isValidRange(rnge, file_size) {
-		return e.String(416, "Requested Range Not Satisfiable")
-	}
 
 	fileCacheKey := param + "file"
 	filePointerInterface, found := c.Get(fileCacheKey)
@@ -72,31 +73,76 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.C
 		return e.String(500, "Failed to read file")
 	}
 
-	e.Response.Header().Set("Content-Type", "application/octet-stream")
-	_, err = e.Response.Write(buffer)
-	if err != nil {
-		return e.String(500, "Failed to write response")
-	}
 	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, int(file_size)))
-	e.Response.Header().Set("Content-Length", fmt.Sprintf("%d", len(buffer)))
+	e.Response.Header().Set("Accept-Ranges", "bytes")
+	e.Response.Header().Set("Content-Length", strconv.Itoa(len(buffer)))
+	e.Response.Header().Set("Content-Type", "audio/flac")
+	e.Response.WriteHeader(206)
 	e.Response.Write(buffer)
+	// end := time.Since(s).Nanoseconds()
+	// secs := float64(end) / 1000000000
+	// fmt.Println("Time taken to stream", secs)
 	return nil
 }
 
-func isValidRange(rnge string, fileSize float64) bool {
-	// Implement the logic to validate the range
-	// This is a simple example, you might need to adjust it based on your requirements
-	var start, end int
-	_, err := fmt.Sscanf(rnge, "bytes=%d-%d", &start, &end)
+func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+
+	rnge := e.Request.Header.Get("Range")
+	param := e.Request.URL.Query().Get("id")
+	if rnge == "" || param == "" {
+		return e.String(400, "Invalid request")
+	}
+
+	// s := time.Now()
+
+	col, err := app.FindCollectionByNameOrId("UploadedFiles")
+
 	if err != nil {
-		return false
+		return e.String(500, "Failed to find collection")
 	}
 
-	if start < 0 || end >= int(fileSize) || start > end {
-		return false
+	record, err := app.FindRecordById(col, param)
+	if err != nil {
+		return e.String(400, "Invalid request")
 	}
 
-	return true
+	file_path := record.Get("file_path").(string)
+	file_size := record.Get("file_size").(float64)
+
+	filePointer, err := os.Open(file_path)
+	if err != nil {
+		return e.String(500, "Failed to open file")
+	}
+
+	// Seek to the correct position based on the range
+	rangeStart, rangeEnd, err := parseRange(rnge, file_size)
+	if err != nil {
+		return e.String(416, "Invalid range")
+	}
+
+	// Move the file pointer to the start of the range
+	_, err = filePointer.Seek(rangeStart, 0)
+	if err != nil {
+		return e.String(500, "Failed to seek to range")
+	}
+
+	// Read the bytes for the requested range
+	buffer := make([]byte, rangeEnd-rangeStart)
+	_, err = filePointer.Read(buffer)
+	if err != nil {
+		return e.String(500, "Failed to read file")
+	}
+
+	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, int(file_size)))
+	e.Response.Header().Set("Accept-Ranges", "bytes")
+	e.Response.Header().Set("Content-Length", strconv.Itoa(len(buffer)))
+	e.Response.Header().Set("Content-Type", "audio/flac")
+	e.Response.WriteHeader(206)
+	e.Response.Write(buffer)
+	// end := time.Since(s).Nanoseconds()
+	// secs := float64(end) / 1000000000
+	// fmt.Println("Time taken to stream", secs)
+	return nil
 }
 
 func parseRange(rnge string, fileSize float64) (int64, int64, error) {
@@ -121,6 +167,7 @@ func parseRange(rnge string, fileSize float64) (int64, int64, error) {
 	// If the end value is empty, it means we are requesting from the start to the end of the file
 	var end int64
 	if ranges[1] == "" {
+		//first 1mb of data
 		end = int64(fileSize) - 1
 	} else {
 		end, err = strconv.ParseInt(ranges[1], 10, 64)

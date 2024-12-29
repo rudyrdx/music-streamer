@@ -22,7 +22,7 @@ func SetupHandlers(se *core.ServeEvent, app *pocketbase.PocketBase, c *cache.Cac
 	})
 
 	se.Router.GET("/stream", func(e *core.RequestEvent) error {
-		return stream.HandleStreamer(e, app, c)
+		return stream.HandleStreamerCached(e, app, c)
 	})
 
 	return se.Next()

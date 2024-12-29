@@ -13,7 +13,9 @@ import (
 	"math"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/patrickmn/go-cache"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/rudyrdx/music-streamer/chunker/collections"
@@ -24,15 +26,18 @@ import (
 func main() {
 	app := pocketbase.New()
 
+	c := cache.New(5*time.Minute, 10*time.Minute)
+
 	app.OnServe().BindFunc(func(be *core.ServeEvent) error {
-
 		collections.SetupCollections(app)
-
 		return be.Next()
 	})
 
-	app.OnServe().BindFunc(handlers.SetupHandlers)
-	
+	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		handlers.SetupHandlers(e, app, c)
+		return e.Next()
+	})
+
 	app.Cron().MustAdd("Chunk", "*/1 * * * *", func() {
 
 		records, err := app.FindRecordsByFilter(
@@ -138,7 +143,12 @@ func main() {
 		}
 	})
 
+	app.Cron().Remove("Chunk")
+
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
 	}
 }
+
+//instead of chunking, we open a pointer to that file, then we seek to the byte position and then provide that
+//

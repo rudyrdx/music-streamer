@@ -2,22 +2,142 @@ package stream
 
 import (
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 
+	"github.com/patrickmn/go-cache"
+	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/rudyrdx/music-streamer/chunker/helpers"
 )
 
-func HandleStreamer(e *core.RequestEvent) error {
+func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
 
 	rnge := e.Request.Header.Get("Range")
-	if rnge == "" {
-		return e.String(400, "Range header not found")
+	param := e.Request.URL.Query().Get("id")
+	if rnge == "" || param == "" {
+		return e.String(400, "Invalid request")
 	}
 
 	fmt.Println("Range: ", rnge)
 
+	col, _ := app.FindCollectionByNameOrId("UploadedFiles")
+
+	record, err := helpers.LookupFromCacheOrDB[*core.Record](c, param, func() (*core.Record, error) {
+		return app.FindRecordById(col, param)
+	}, cache.DefaultExpiration)
+	if err != nil {
+		return e.String(400, "Invalid request")
+	}
+
+	file_path := record.Get("file_path").(string)
+	file_size := record.Get("file_size").(float64)
+
+	if !isValidRange(rnge, file_size) {
+		return e.String(416, "Requested Range Not Satisfiable")
+	}
+
+	fileCacheKey := param + "file"
+	filePointerInterface, found := c.Get(fileCacheKey)
+	var filePointer *os.File
+	if !found {
+		// Open the file
+		filePointer, err = os.Open(file_path)
+		if err != nil {
+			return e.String(500, "Failed to open file")
+		}
+		// Cache the file pointer
+		c.Set(fileCacheKey, filePointer, cache.DefaultExpiration)
+	} else {
+		filePointer = filePointerInterface.(*os.File)
+	}
+
+	// Seek to the correct position based on the range
+	rangeStart, rangeEnd, err := parseRange(rnge, file_size)
+	if err != nil {
+		return e.String(416, "Invalid range")
+	}
+
+	// Move the file pointer to the start of the range
+	_, err = filePointer.Seek(rangeStart, 0)
+	if err != nil {
+		return e.String(500, "Failed to seek to range")
+	}
+
+	// Read the bytes for the requested range
+	buffer := make([]byte, rangeEnd-rangeStart)
+	_, err = filePointer.Read(buffer)
+	if err != nil {
+		return e.String(500, "Failed to read file")
+	}
+
+	e.Response.Header().Set("Content-Type", "application/octet-stream")
+	_, err = e.Response.Write(buffer)
+	if err != nil {
+		return e.String(500, "Failed to write response")
+	}
+	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, int(file_size)))
+	e.Response.Header().Set("Content-Length", fmt.Sprintf("%d", len(buffer)))
+	e.Response.Write(buffer)
 	return nil
 }
 
+func isValidRange(rnge string, fileSize float64) bool {
+	// Implement the logic to validate the range
+	// This is a simple example, you might need to adjust it based on your requirements
+	var start, end int
+	_, err := fmt.Sscanf(rnge, "bytes=%d-%d", &start, &end)
+	if err != nil {
+		return false
+	}
+
+	if start < 0 || end >= int(fileSize) || start > end {
+		return false
+	}
+
+	return true
+}
+
+func parseRange(rnge string, fileSize float64) (int64, int64, error) {
+	// Example: "bytes=100-200"
+	if !strings.HasPrefix(rnge, "bytes=") {
+		return 0, 0, fmt.Errorf("invalid range format")
+	}
+
+	// Remove the "bytes=" prefix and split the range
+	rangeParts := strings.TrimPrefix(rnge, "bytes=")
+	ranges := strings.Split(rangeParts, "-")
+	if len(ranges) != 2 {
+		return 0, 0, fmt.Errorf("invalid range format")
+	}
+
+	// Parse the start and end values
+	start, err := strconv.ParseInt(ranges[0], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid start value")
+	}
+
+	// If the end value is empty, it means we are requesting from the start to the end of the file
+	var end int64
+	if ranges[1] == "" {
+		end = int64(fileSize) - 1
+	} else {
+		end, err = strconv.ParseInt(ranges[1], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid end value")
+		}
+	}
+
+	// Validate the range
+	if start > end || start < 0 || end >= int64(fileSize) {
+		return 0, 0, fmt.Errorf("requested range out of bounds")
+	}
+
+	return start, end, nil
+}
+
+//326kb worth of data on spotify premium
 // we have stored the chunks in database, when a music with that id is requested,
 //we will have to lookup all the chunks and then for whatever range the client requests,
 //we will have to stream the chunks to the client.

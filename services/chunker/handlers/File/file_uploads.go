@@ -86,7 +86,7 @@ func HandleUpload(re *core.RequestEvent) error {
 		return re.String(500, fmt.Sprintf("Failed to save files: %v", failures))
 	}
 
-	return nil
+	return re.String(200, "Files uploaded successfully")
 }
 
 //any incoming requests to this chunker service will be expected to have

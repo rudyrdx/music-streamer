@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/patrickmn/go-cache"
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/rudyrdx/music-streamer/chunker/helpers"
@@ -21,20 +22,23 @@ func HandleStreamerCached(e *core.RequestEvent, app *pocketbase.PocketBase, c *c
 	}
 
 	// s := time.Now()
-
-	col, err := helpers.LookupFromCacheOrDB[*core.Collection](c, "UploadedFiles", func() (*core.Collection, error) {
+	col, err := helpers.LookupFromCacheOrDB(c, "UploadedFiles", func() (*core.Collection, error) {
 		return app.FindCollectionByNameOrId("UploadedFiles")
 	}, cache.DefaultExpiration)
-
 	if err != nil {
 		return e.String(500, "Failed to find collection")
 	}
-	record, err := helpers.LookupFromCacheOrDB[*core.Record](c, param, func() (*core.Record, error) {
+
+	record, err := helpers.LookupFromCacheOrDB(c, param, func() (*core.Record, error) {
 		return app.FindRecordById(col, param)
 	}, cache.DefaultExpiration)
 	if err != nil {
 		return e.String(400, "Invalid request")
 	}
+
+	// end := time.Since(s).Nanoseconds()
+	// secs := float64(end) / 1000000000
+	// fmt.Println("Time taken to stream", secs)
 
 	file_path := record.Get("file_path").(string)
 	file_size := record.Get("file_size").(float64)
@@ -79,9 +83,7 @@ func HandleStreamerCached(e *core.RequestEvent, app *pocketbase.PocketBase, c *c
 	e.Response.Header().Set("Content-Type", "audio/flac")
 	e.Response.WriteHeader(206)
 	e.Response.Write(buffer)
-	// end := time.Since(s).Nanoseconds()
-	// secs := float64(end) / 1000000000
-	// fmt.Println("Time taken to stream", secs)
+
 	return nil
 }
 
@@ -94,9 +96,7 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	// s := time.Now()
-
 	col, err := app.FindCollectionByNameOrId("UploadedFiles")
-
 	if err != nil {
 		return e.String(500, "Failed to find collection")
 	}
@@ -105,6 +105,9 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	if err != nil {
 		return e.String(400, "Invalid request")
 	}
+	// end := time.Since(s).Nanoseconds()
+	// secs := float64(end) / 1000000000
+	// fmt.Println("Time taken to stream", secs)
 
 	file_path := record.Get("file_path").(string)
 	file_size := record.Get("file_size").(float64)
@@ -139,9 +142,87 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	e.Response.Header().Set("Content-Type", "audio/flac")
 	e.Response.WriteHeader(206)
 	e.Response.Write(buffer)
-	// end := time.Since(s).Nanoseconds()
-	// secs := float64(end) / 1000000000
-	// fmt.Println("Time taken to stream", secs)
+	return nil
+}
+
+func HandleChunkedStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
+
+	rnge := e.Request.Header.Get("Range")
+	param := e.Request.URL.Query().Get("id")
+
+	if rnge == "" || param == "" {
+		return e.String(400, "Invalid request")
+	}
+
+	// s := time.Now()
+	col, err := helpers.LookupFromCacheOrDB(c, "UploadedFiles", func() (*core.Collection, error) {
+		return app.FindCollectionByNameOrId("UploadedFiles")
+	}, cache.DefaultExpiration)
+	if err != nil {
+		return e.String(500, "Failed to find collection")
+	}
+
+	record, err := helpers.LookupFromCacheOrDB(c, param, func() (*core.Record, error) {
+		return app.FindRecordById(col, param)
+	}, cache.DefaultExpiration)
+	if err != nil {
+		return e.String(400, "Invalid request")
+	}
+
+	chunks, err := helpers.LookupFromCacheOrDB(c, "ChunkedFiles_"+record.Id, func() ([]*core.Record, error) {
+		return app.FindAllRecords("ChunkedFiles", dbx.HashExp{"file": record.Id})
+	}, cache.DefaultExpiration)
+	if err != nil {
+		return e.String(500, "Failed to find chunks")
+	}
+
+	if len(chunks) < 1 {
+		return e.String(500, "No chunks found")
+	}
+	println(chunks)
+
+	//each chunk has startOffset and endOffset along with chunkPath
+	//we need to have a datastructure that allows quick lookup of chunk based on range
+	//a map of range to chunk
+	type Chunk struct {
+		StartOffset int64
+		EndOffset   int64
+		ChunkPath   string
+		Size        int
+	}
+
+	var chunkMap = make(map[int64]Chunk)
+	for _, chunk := range chunks {
+		startOffset := int64(chunk.GetInt("start_byte_offset"))
+		endOffset := int64(chunk.GetInt("end_byte_offset"))
+		chunkPath := chunk.Get("chunk_path").(string)
+		chunkMap[startOffset] = Chunk{
+			StartOffset: startOffset,
+			EndOffset:   endOffset,
+			ChunkPath:   chunkPath,
+			Size:        chunk.GetInt("size"),
+		}
+	}
+
+	// rangeStart, rangeEnd, err := parseRange(rnge, float64(len(chunkMap)))
+	// if err != nil {
+	// 	return e.String(416, "Invalid range")
+	// }
+	// here implement a ds where as we pass the range, we get the path and stream it directly to the client
+
+	path := "./tmp/1735547160001471twuduwdppq"
+
+	fileBytes, err := os.ReadFile(path)
+	if err != nil {
+		return e.String(500, "Failed to read file")
+	}
+
+	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(fileBytes), len(fileBytes)))
+	e.Response.Header().Set("Accept-Ranges", "bytes")
+	e.Response.Header().Set("Content-Length", strconv.Itoa(len(fileBytes)))
+	e.Response.Header().Set("Content-Type", "audio/flac")
+	e.Response.WriteHeader(206)
+	e.Response.Write(fileBytes)
 	return nil
 }
 
@@ -167,7 +248,6 @@ func parseRange(rnge string, fileSize float64) (int64, int64, error) {
 	// If the end value is empty, it means we are requesting from the start to the end of the file
 	var end int64
 	if ranges[1] == "" {
-		//first 1mb of data
 		end = int64(fileSize) - 1
 	} else {
 		end, err = strconv.ParseInt(ranges[1], 10, 64)

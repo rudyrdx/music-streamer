@@ -223,6 +223,7 @@ func HandleChunkedStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *
 	e.Response.Header().Set("Content-Type", "audio/flac")
 	e.Response.WriteHeader(206)
 	e.Response.Write(fileBytes)
+	//hny
 	return nil
 }
 

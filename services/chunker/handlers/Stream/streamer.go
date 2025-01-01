@@ -145,6 +145,37 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	return nil
 }
 
+type Range struct {
+	start, end int
+}
+
+type RangeHashMap struct {
+	data map[Range]interface{}
+}
+
+func NewRangedMap() *RangeHashMap {
+	return &RangeHashMap{
+		data: make(map[Range]interface{}),
+	}
+}
+
+func (r *RangeHashMap) Add(start, end int, value interface{}) error {
+	if start > end {
+		return fmt.Errorf("start cannot be greater than end")
+	}
+	r.data[Range{start, end}] = value
+	return nil
+}
+
+func (r *RangeHashMap) Get(num int) (interface{}, bool) {
+	for key, val := range r.data {
+		if num >= key.start && num <= key.end {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
 func HandleChunkedStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
 
 	rnge := e.Request.Header.Get("Range")
@@ -179,40 +210,30 @@ func HandleChunkedStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *
 	if len(chunks) < 1 {
 		return e.String(500, "No chunks found")
 	}
-	println(chunks)
 
 	//each chunk has startOffset and endOffset along with chunkPath
 	//we need to have a datastructure that allows quick lookup of chunk based on range
 	//a map of range to chunk
-	type Chunk struct {
-		StartOffset int64
-		EndOffset   int64
-		ChunkPath   string
-		Size        int
-	}
 
-	var chunkMap = make(map[int64]Chunk)
+	var chunkMap = NewRangedMap()
 	for _, chunk := range chunks {
 		startOffset := int64(chunk.GetInt("start_byte_offset"))
 		endOffset := int64(chunk.GetInt("end_byte_offset"))
 		chunkPath := chunk.Get("chunk_path").(string)
-		chunkMap[startOffset] = Chunk{
-			StartOffset: startOffset,
-			EndOffset:   endOffset,
-			ChunkPath:   chunkPath,
-			Size:        chunk.GetInt("size"),
-		}
+		chunkMap.Add(int(startOffset), int(endOffset), string(chunkPath))
 	}
 
-	// rangeStart, rangeEnd, err := parseRange(rnge, float64(len(chunkMap)))
-	// if err != nil {
-	// 	return e.String(416, "Invalid range")
-	// }
-	// here implement a ds where as we pass the range, we get the path and stream it directly to the client
+	rangeStart, _, err := parseRange(rnge, float64(record.GetInt("file_size")))
+	if err != nil {
+		return e.String(416, "Invalid range")
+	}
 
-	path := "./tmp/1735547160001471twuduwdppq"
+	path, t := chunkMap.Get(int(rangeStart) + 10)
+	if !t {
+		return e.String(500, "Failed to find chunk")
+	}
 
-	fileBytes, err := os.ReadFile(path)
+	fileBytes, err := os.ReadFile(path.(string))
 	if err != nil {
 		return e.String(500, "Failed to read file")
 	}
@@ -221,6 +242,8 @@ func HandleChunkedStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *
 	e.Response.Header().Set("Accept-Ranges", "bytes")
 	e.Response.Header().Set("Content-Length", strconv.Itoa(len(fileBytes)))
 	e.Response.Header().Set("Content-Type", "audio/flac")
+	//add cors header
+	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
 	e.Response.WriteHeader(206)
 	e.Response.Write(fileBytes)
 	//hny
@@ -264,6 +287,9 @@ func parseRange(rnge string, fileSize float64) (int64, int64, error) {
 
 	return start, end, nil
 }
+
+//ok 1 approach that i can think is, we prepare a hashmap for the chunk ranges and ids, and we send the json
+//to the client based on which the clinet will request the chunk of that range.
 
 //326kb worth of data on spotify premium
 // we have stored the chunks in database, when a music with that id is requested,

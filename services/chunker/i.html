@@ -2,84 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Stream as Blob</title>
+    <title>Audio Player with Preloaded Chunks</title>
 </head>
 <body>
-    <audio id="audioPlayer" controls>
-        Your browser does not support the audio element.
-    </audio>
-
-    <script>
-        // URL of the audio source
-        const audioSource = "http://127.0.0.1:3000/streamcached?id=z1gyab4962a8rj6";
-    
-        // Initial start range (in bytes) for the first request
-        let startRange = 10;
-    
-        // Function to fetch audio data with a Range header
-        async function loadAudioWithRange(url, rangeStart) {
-            try {
-                // Set the range header for the request
-                const headers = new Headers();
-                headers.append("Range", `bytes=${rangeStart}-`);
-    
-                // Fetch the audio data with the specified range
-                const response = await fetch(url, { headers });
-    
-                // Check if the response is OK
-                if (!response.ok && response.status !== 206) {
-                    throw new Error(`Failed to fetch audio: ${response.statusText}`);
-                }
-    
-                // Convert the response to a Blob
-                const audioBlob = await response.blob();
-    
-                // Create a Blob URL
-                const blobUrl = URL.createObjectURL(audioBlob);
-    
-                // Set the Blob URL as the source of the audio element
-                const audioPlayer = document.getElementById("audioPlayer");
-                audioPlayer.src = blobUrl;
-    
-                // Auto-play after loading the blob
-                audioPlayer.play();
-            } catch (error) {
-                console.error("Error loading audio:", error);
-            }
-        }
-    
-        // Function to handle range-based loading when the audio timeline changes
-        function handleAudioTimelineUpdate(event) {
-            const audioPlayer = event.target;
-            const currentTime = audioPlayer.currentTime;
-    
-            // Convert currentTime to a byte range (example conversion)
-            // Note: This is just an example, and the actual conversion depends on the audio file's encoding and bitrate
-            const bytesPerSecond = 16000; // Example: 16 KB per second
-            const newRangeStart = Math.floor(currentTime * bytesPerSecond);
-    
-            // If the new range is different, fetch the audio from the new range
-            if (newRangeStart !== startRange) {
-                startRange = newRangeStart;
-                loadAudioWithRange(audioSource, startRange);
-            }
-        }
-    
-        // Set up the audio player and attach the timeline update handler
-        async function initializeAudioPlayer() {
-            const audioPlayer = document.getElementById("audioPlayer");
-    
-            // Load the initial range (starting at byte 10)
-            await loadAudioWithRange(audioSource, startRange);
-    
-            // Listen for time updates and fetch the corresponding range
-            audioPlayer.addEventListener("timeupdate", handleAudioTimelineUpdate);
-        }
-    
-        // Initialize the audio player on page load
-        document.addEventListener("DOMContentLoaded", initializeAudioPlayer);
-    </script>
-    
+    <audio id="audio-player" controls></audio>
+    <br>
+    <button id="load-btn">Load Song</button>
+    <button id="play-btn">Play</button>
+    <button id="pause-btn">Pause</button>
+    <input type="range" id="seek-bar" value="0" min="0" step="0.1">
+    <script src="script.js"></script>
 </body>
 </html>

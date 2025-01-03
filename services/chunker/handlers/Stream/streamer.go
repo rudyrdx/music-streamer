@@ -288,6 +288,56 @@ func parseRange(rnge string, fileSize float64) (int64, int64, error) {
 	return start, end, nil
 }
 
+func GetChunkData(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
+	param := e.Request.URL.Query().Get("id")
+	if param == "" {
+		return e.String(400, "Invalid request")
+	}
+
+	col, err := helpers.LookupFromCacheOrDB(c, "UploadedFiles", func() (*core.Collection, error) {
+		return app.FindCollectionByNameOrId("UploadedFiles")
+	}, cache.DefaultExpiration)
+	if err != nil {
+		return e.String(500, "Failed to find collection")
+	}
+
+	record, err := helpers.LookupFromCacheOrDB(c, param, func() (*core.Record, error) {
+		return app.FindRecordById(col, param)
+	}, cache.DefaultExpiration)
+	if err != nil {
+		return e.String(400, "Invalid request")
+	}
+
+	chunks, err := helpers.LookupFromCacheOrDB(c, "ChunkedFiles_"+record.Id, func() ([]*core.Record, error) {
+		return app.FindAllRecords("ChunkedFiles", dbx.HashExp{"file": record.Id})
+	}, cache.DefaultExpiration)
+	if err != nil {
+		return e.String(500, "Failed to find chunks")
+	}
+
+	metadataChunks := make(map[int]interface{})
+	for _, chunk := range chunks {
+		order := chunk.GetInt("chunk_order")
+		size := chunk.GetInt("chunk_size")
+		sOffset := float64(chunk.GetInt("start_byte_offset"))
+		eOffset := float64(chunk.GetInt("end_byte_offset"))
+		metadataChunks[order] = map[string]interface{}{
+			"id":          chunk.Id,
+			"size":        size,
+			"startOffset": sOffset,
+			"endOffset":   eOffset,
+		}
+	}
+
+	metadata := map[string]interface{}{
+		"fileSize": record.Get("file_size"),
+		"chunks":   metadataChunks,
+	}
+
+	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
+	return e.JSON(200, metadata)
+}
+
 //ok 1 approach that i can think is, we prepare a hashmap for the chunk ranges and ids, and we send the json
 //to the client based on which the clinet will request the chunk of that range.
 

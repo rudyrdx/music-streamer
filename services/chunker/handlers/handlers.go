@@ -28,5 +28,9 @@ func SetupHandlers(se *core.ServeEvent, app *pocketbase.PocketBase, c *cache.Cac
 		return stream.HandleChunkedStreamer(e, app, c)
 	})
 
+	se.Router.GET("/metadata", func(e *core.RequestEvent) error {
+		return stream.GetChunkData(e, app, c)
+	})
+
 	return se.Next()
 }

@@ -31,6 +31,9 @@ func SetupHandlers(se *core.ServeEvent, app *pocketbase.PocketBase, c *cache.Cac
 	se.Router.GET("/metadata", func(e *core.RequestEvent) error {
 		return stream.GetChunkData(e, app, c)
 	})
+	se.Router.GET("/chunk", func(e *core.RequestEvent) error {
+		return stream.HandleChunkRequest(e, app, c)
+	})
 
 	return se.Next()
 }

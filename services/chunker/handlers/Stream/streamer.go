@@ -2,6 +2,7 @@ package stream
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -81,6 +82,7 @@ func HandleStreamerCached(e *core.RequestEvent, app *pocketbase.PocketBase, c *c
 	e.Response.Header().Set("Accept-Ranges", "bytes")
 	e.Response.Header().Set("Content-Length", strconv.Itoa(len(buffer)))
 	e.Response.Header().Set("Content-Type", "audio/flac")
+	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
 	e.Response.WriteHeader(206)
 	e.Response.Write(buffer)
 
@@ -140,6 +142,7 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	e.Response.Header().Set("Accept-Ranges", "bytes")
 	e.Response.Header().Set("Content-Length", strconv.Itoa(len(buffer)))
 	e.Response.Header().Set("Content-Type", "audio/flac")
+	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
 	e.Response.WriteHeader(206)
 	e.Response.Write(buffer)
 	return nil
@@ -336,6 +339,37 @@ func GetChunkData(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cac
 
 	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
 	return e.JSON(200, metadata)
+}
+
+func HandleChunkRequest(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
+	param := e.Request.URL.Query().Get("id")
+
+	if param == "" {
+		return e.String(400, "Invalid request")
+	}
+
+	record, err := app.FindRecordById("ChunkedFiles", param)
+	if err != nil {
+		return e.String(400, "Invalid request")
+	}
+
+	file, err := os.Open(record.Get("chunk_path").(string))
+	if err != nil {
+		return e.String(500, "Failed to open file")
+	}
+	defer file.Close()
+
+	e.Response.Header().Set("Content-Type", "audio/flac")
+	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
+	e.Response.WriteHeader(206)
+
+	// Stream FFmpeg output directly to the client
+	if _, err := io.Copy(e.Response, file); err != nil {
+		fmt.Println("Streaming error:", err)
+		e.String(500, "Failed to stream audio")
+	}
+	//hny
+	return nil
 }
 
 //ok 1 approach that i can think is, we prepare a hashmap for the chunk ranges and ids, and we send the json

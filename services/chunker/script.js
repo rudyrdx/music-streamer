@@ -1,91 +1,184 @@
+// Define variables outside to make them accessible in functions
+const baseUrl = 'http://localhost:3000/';
 
 /**
- * The slider bar input element used for seeking through the audio track.
+ * @type {MediaSource}
+ */
+let mediaSource = null;
+
+/**
  * @type {HTMLAudioElement}
  */
-const audioPlayer = document.getElementById('audio-player');
+const audio = document.getElementById('audioElement');
+
 /**
- * The slider bar input element used for seeking through the audio track.
- * @type {HTMLInputElement}
+ * @type {JSON}
  */
-const seekBar = document.getElementById('seek-bar');
-const playBtn = document.getElementById('play-btn');
-const pauseBtn = document.getElementById('pause-btn');
+let metadata = null;
 
-const loadBtn = document.getElementById('load-btn');
+/**
+ * @type {SourceBuffer}
+ */
+let srcBuff = null;
 
-// Variables for MediaSource and SourceBuffer
-let mediaSource;
-let sourceBuffer;
-let audioChunks = {};
-let appendedChunks = new Set();
+let current_id = 1;
+let pendingChunkIds = new Set();
 
-// Variables for audio file and metadata
-let fileSize;
-let metaData;
-
-
-// Event listener for loading the song
-loadBtn.addEventListener('click', async () => {
-    // Prompt user for the audio file URL and metadata URL
-    const audioURL = 'http://127.0.0.1:3000/streamcached?id=z1gyab4962a8rj6';
-    const metadataURL = 'http://127.0.0.1:3000/metadata?id=z1gyab4962a8rj6';
-
-    if (!audioURL || !metadataURL) {
-        alert('Please enter valid audio and metadata URLs');
-        return;
-    }
-       
-    // Fetch metadata JSON
-    const response = await fetch(metadataURL);
-    const metadata = await response.json();
-    metaData = metadata;
-    keys = Object.keys(metadata["chunks"])
-    //divide the timeline into equally seperated keys
-    fileSize = metadata["file_size"]
-
-    seekBar.max = fileSize;
-
-
-    // Initialize MediaSource
-    mediaSource = new MediaSource();
-    // Set the audio source to the MediaSource object
-    audioPlayer.src = URL.createObjectURL(mediaSource);
-    // Event listener when MediaSource is open
-    mediaSource.addEventListener('sourceopen', () => initSourceBuffer(metadata, audioURL));
-});
-
-// Initialize SourceBuffer and preload initial chunks
-async function initSourceBuffer(metadata, audioURL) {
-    
+function updateStatus(message) {
+    document.getElementById('status').innerText = 'Status: ' + message;
 }
 
-// Play button event listener
-playBtn.addEventListener('click', () => {
-    audioPlayer.play();
+function loadMusic() {
+    if (mediaSource) {
+        // If mediaSource already exists, reset everything
+        mediaSource.removeEventListener('sourceopen', sourceOpen);
+        mediaSource = null;
+        audio.src = '';
+        current_id = 1;
+        pendingChunkIds.clear();
+        if (srcBuff) {
+            srcBuff.abort();
+            srcBuff = null;
+        }
+    }
+    
+    mediaSource = new MediaSource();
+    audio.src = URL.createObjectURL(mediaSource);
+    mediaSource.addEventListener('sourceopen', sourceOpen);
+    updateStatus('Loading music...');
+}
+
+async function sourceOpen() {
+    try {
+        const metaResponse = await fetch(baseUrl + 'metadata?id=z1gyab4962a8rj6');
+        metadata = await metaResponse.json();
+        console.log(metadata);
+        updateStatus('Metadata fetched.');
+    } catch (error) {
+        console.error("Failed to fetch metadata:", error);
+        updateStatus('Failed to fetch metadata.');
+        return;
+    }
+
+    srcBuff = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
+    if (!metadata) return;
+
+    current_id = 1;
+    pendingChunkIds = new Set();
+
+    const initial_id = metadata["chunks"][current_id.toString()]["id"];
+    if (initial_id === undefined) return;
+    
+    pendingChunkIds.add(current_id);
+    await fetchAndAppendChunk(initial_id, srcBuff);
+    pendingChunkIds.delete(current_id);
+    updateStatus('Playing music...');
+    srcBuff.addEventListener('updateend', updateEnd);
+    // audio.addEventListener('timeupdate', timeUpdateHandler);
+}
+
+async function updateEnd() {
+   console.log('Update end');
+}
+audio.addEventListener('canplay', () => {
+    audio.play();
 });
 
-// Pause button event listener
-pauseBtn.addEventListener('click', () => {
-    audioPlayer.pause();
+
+async function timeUpdateHandler() {
+    if (srcBuff.buffered.length > 0 &&
+        audio.currentTime > srcBuff.buffered.end(0) - 3 &&
+        !pendingChunkIds.has(current_id + 1)) {
+
+        const next_id = current_id + 1;
+        const next_chunk_info = metadata["chunks"][next_id.toString()];
+
+        if (!next_chunk_info) {
+            updateStatus('End of music.');
+            return;
+        }
+
+        const next_chunk_id = next_chunk_info["id"];
+        pendingChunkIds.add(next_id);
+
+        // Await fetchAndAppendChunk, but don't play here
+        await fetchAndAppendChunk(next_chunk_id, srcBuff);
+
+        pendingChunkIds.delete(next_id);
+        current_id = next_id;
+    }
+}
+function fetchNextChunk() {
+    const next_id = current_id + 1;
+    if (pendingChunkIds.has(next_id)) {
+        console.log("Chunk is already being fetched");
+        return;
+    }
+    const next_chunk_info = metadata["chunks"][next_id.toString()];
+    if (!next_chunk_info) {
+        updateStatus('No more chunks to fetch.');
+        return;
+    }
+
+    const next_chunk_id = next_chunk_info["id"];
+    pendingChunkIds.add(next_id);
+
+    fetchAndAppendChunk(next_chunk_id, srcBuff).then(() => {
+        pendingChunkIds.delete(next_id);
+        current_id = next_id;
+    });
+}
+
+/**
+ * 
+ * @param {number} chunkId 
+ * @param {SourceBuffer} srcBuff 
+ */
+async function fetchAndAppendChunk(chunkId, srcBuff) {
+    try {
+        const chunkData = await fetchChunk(chunkId);
+        await new Promise((resolve, reject) => {
+            srcBuff.addEventListener('updateend', function onUpdateEnd() {
+                srcBuff.removeEventListener('updateend', onUpdateEnd);
+                resolve();
+            });
+            srcBuff.addEventListener('error', function onError(e) {
+                srcBuff.removeEventListener('error', onError);
+                reject(e);
+            });
+            srcBuff.appendBuffer(chunkData);
+        });
+        console.log('Appended chunk:', chunkId);
+        updateStatus('Fetched and appended chunk: ' + chunkId);
+    } catch (error) {
+        console.error("Failed to fetch or append chunk:", error);
+        updateStatus('Failed to fetch or append chunk.');
+    }
+}
+
+async function fetchChunk(chnkId) {
+    const response = await fetch(baseUrl + 'chunk?id=' + chnkId);
+    if (!response.ok) {
+        throw new Error('Network response was not ok');
+    }
+    const data = await response.arrayBuffer();
+    console.log('Fetched chunk:', chnkId);
+    return data;
+}
+
+// Wire the controls to functions
+document.getElementById('loadMusicBtn').addEventListener('click', loadMusic);
+document.getElementById('playBtn').addEventListener('click', () => { 
+    audio.play();
+    updateStatus('Playing music...');
 });
-
-// Update seek bar as audio plays
-audioPlayer.addEventListener('timeupdate', () => {
-    // Get the current time and duration
-    const currentTime = audioPlayer.currentTime;
-    const duration = audioPlayer.duration || 0;
-
-    // Update the seek bar value
-    seekBar.max = duration;
-    seekBar.value = currentTime;
+document.getElementById('pauseBtn').addEventListener('click', () => { 
+    audio.pause();
+    updateStatus('Music paused.');
 });
-
-// Seek to new time when seek bar value changes
-seekBar.addEventListener('input', () => {
-    audioPlayer.currentTime = seekBar.value;
+document.getElementById('stopBtn').addEventListener('click', () => { 
+    audio.pause(); 
+    audio.currentTime = 0;
+    updateStatus('Music stopped.');
 });
-
-//when timeline updats, check the current byte. if the chunk for the current byte is loaded then let the audioplayer play.
-//when the current byte is close to the end of the loaded chunk, we can request chunk from endpoint.
-//the request chunk endpoint is dynamic, meaning we can request multiple chunks in single call.
+document.getElementById('nextChunkBtn').addEventListener('click', fetchNextChunk);

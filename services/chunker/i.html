@@ -1,23 +1,20 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Audio Player with Preloaded Chunks</title>
+    <title>Advanced Audio Player</title>
+    <link rel="stylesheet" type="text/css" href="style.css">
 </head>
 <body>
-    <audio id="audio-player" controls></audio>
-    <br>
-    <button id="load-btn">Load Song</button>
-    <button id="play-btn">Play</button>
-    <button id="pause-btn">Pause</button>
-    <br>
-    <br>
-    <br>
-    <br>
-    <input type="range" id="seek-bar" value="0" min="0" step="1">
-    <div class="inputValue">
-        
+    <div id="controls">
+        <button id="loadMusicBtn">Load Music</button>
+        <button id="playBtn">Play</button>
+        <button id="pauseBtn">Pause</button>
+        <button id="stopBtn">Stop</button>
+        <button id="nextChunkBtn">Next Chunk</button>
+        <div id="status">Status: Idle</div>
     </div>
+    
+    <audio id="audioElement" controls></audio>
     <script src="script.js"></script>
 </body>
 </html>

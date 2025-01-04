@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html>
 <head>
     <title>Advanced Audio Player</title>
@@ -16,5 +16,38 @@
     
     <audio id="audioElement" controls></audio>
     <script src="script.js"></script>
+</body>
+</html> -->
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>FLAC Stream Player</title>
+</head>
+<body>
+  <button id="playButton">Play</button>
+  <script src="libflac.js" type="text/javascript"></script> 
+  <script>
+    const playButton = document.getElementById('playButton');
+    const url = 'http://127.0.0.1:3000/chunk?id=m5rpfmr8j3gutv6';
+
+    playButton.addEventListener('click', async () => {
+      const audioContext = new AudioContext();
+      const response = await fetch(url);
+      const arrayBuffer = await response.arrayBuffer();
+      const flacData = new Uint8Array(arrayBuffer);
+
+      let flacDecoder = Flac.create_libflac_decoder(true);
+      const audioBuffer = audioContext.createBuffer(samples.numberOfChannels, samples.length / samples.numberOfChannels, sampleRate);
+      for (let channel = 0; channel < samples.numberOfChannels; channel++) {
+          audioBuffer.copyToChannel(samples.getChannelData(channel), channel);
+      }
+
+      const sourceNode = audioContext.createBufferSource();
+      sourceNode.buffer = audioBuffer;
+      sourceNode.connect(audioContext.destination);
+      sourceNode.start();
+    });
+  </script>
 </body>
 </html>

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sequential Audio Playback</title>
+</head>
+<body>
+    <button id="play">Play Audio</button>
+    <script src="./dist/bundle.js"></script>
+    <script>
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        // let chunkIds = ["742oi75ex48ic93", "hqreoxzd97arvt7", "a3580iz75s7djmb", "7fp438c00lgwwmp"]; // List of chunk IDs
+        let currentChunkIndex = 0;
+        let audioDataBuffer = null; // Master buffer for all chunks
+        let isPlaying = false;
+        let chunkIds = [];
+
+        async function fetchAudioMetadata() {
+            const url = "http://127.0.0.1:3000/metadata?id=o1067pep25f1hq3";
+            try {
+                const response = await fetch(url); // Use await to wait for the fetch request to resolve
+                const data = await response.json(); // Use await to parse the JSON response
+
+                const keys = Object.keys(data["chunks"]);
+                console.log('keys', keys);
+
+                let chunkIds = [];
+                keys.forEach(key => {
+                    chunkIds.push(data["chunks"][key]["id"]);
+                });
+
+                return chunkIds; // Return the chunk IDs as an array
+            } catch (error) {
+                console.error("Error fetching audio metadata:", error);
+            }
+        }
+
+        // Example of how to use the fetchAudioMetadata function
+        (async () => {
+            chunkIds = await fetchAudioMetadata(); // Wait for the chunk IDs to be fetched
+            console.log("Fetched chunk IDs:", chunkIds);
+        })();
+
+
+        async function fetchAudioChunk(id) {
+            const url = `http://127.0.0.1:3000/chunk?id=${id}`;
+            //   const url = `http://localhost:8000/${id}`;
+            try {
+                    const response = await fetch(url);
+
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch chunk ${id}, HTTP status: ${response.status}`);
+                    }
+
+                    // Read the audio data as an ArrayBuffer
+                    return await response.arrayBuffer();
+                } catch (error) {
+                    console.error("Error fetching audio chunk:", error);
+                    return null;
+                }
+        }
+
+
+        async function decodeAudioChunk(arrayBuffer) {
+            try {
+                // Decode the audio data into an AudioBuffer
+                const deco = await audioContext.decodeAudioData(arrayBuffer);
+                // console.log('sample rate',deco.sampleRate);
+                // console.log('number of channels',deco.numberOfChannels);
+                return deco;
+            } catch (error) {
+                console.error("Error decoding audio chunkid:", error);
+                throw error;
+            }
+        }
+
+        async function fetchAndDecodeNextChunk() {
+            if (currentChunkIndex + 1 >= chunkIds.length) {
+                console.log("No more chunks to fetch.");
+                return;
+            }
+
+            const nextChunkId = chunkIds[currentChunkIndex + 1];
+            console.log(`Fetching next chunk: ${nextChunkId}`);
+
+            const arrayBuffer = await fetchAudioChunk(nextChunkId);
+            if (!arrayBuffer) {
+                console.error(`Failed to fetch next chunk: ${nextChunkId}`);
+                return;
+            }
+
+            try {
+                nextAudioBuffer = await decodeAudioChunk(arrayBuffer);
+                console.log("Next chunk decoded and ready.");
+            } catch (error) {
+                console.error("Failed to decode next chunkid:", nextChunkId);
+            }
+        }
+
+        async function playAudioBuffer(audioBuffer) {
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
+
+            // When the current chunk is about to finish, fetch the next chunk
+            source.onended = async () => {
+                console.log("Current chunk finished playing.");
+
+                if (nextAudioBuffer) {
+                    // Play the pre-fetched next chunk
+                    currentChunkIndex++;
+                    playAudioBuffer(nextAudioBuffer);
+                    nextAudioBuffer = null;
+
+                    // Fetch and decode the chunk after that
+                    fetchAndDecodeNextChunk();
+                } else {
+                    console.log("No more chunks to play.");
+                }
+            };
+
+            source.start(0); // Start playing the current audio buffer
+        }
+
+        async function playSequentialChunks() {
+
+            if (currentChunkIndex >= chunkIds.length) {
+                console.log("All chunks have been played.");
+                return;
+            }
+
+            // Fetch and decode the first chunk
+            const firstChunkId = chunkIds[currentChunkIndex];
+            console.log(`Fetching first chunk: ${firstChunkId}`);
+
+            const arrayBuffer = await fetchAudioChunk(firstChunkId);
+            if (!arrayBuffer) {
+                console.error(`Failed to fetch first chunk: ${firstChunkId}`);
+                return;
+            }
+
+            const audioBuffer = await decodeAudioChunk(arrayBuffer);
+
+            // Fetch and decode the second chunk in parallel
+            fetchAndDecodeNextChunk();
+
+            // Play the first chunk
+            playAudioBuffer(audioBuffer);
+        }
+
+        // Attach event listener to the play button
+        document.getElementById("play").addEventListener("click", () => {
+            if (audioContext.state === "suspended") {
+                audioContext.resume();
+            }
+            playSequentialChunks();
+        });
+    </script>
+</body>
+</html>

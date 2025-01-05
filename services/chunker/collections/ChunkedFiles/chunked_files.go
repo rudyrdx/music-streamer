@@ -21,13 +21,11 @@ func CreateCollection() *core.Collection {
 	})
 
 	collection.Fields.Add(&core.NumberField{
-		Name:     "start_byte_offset",
-		Required: true,
+		Name: "start_byte_offset",
 	})
 
 	collection.Fields.Add(&core.NumberField{
-		Name:     "end_byte_offset",
-		Required: true,
+		Name: "end_byte_offset",
 	})
 
 	collection.Fields.Add(&core.NumberField{

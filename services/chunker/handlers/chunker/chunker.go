@@ -251,13 +251,24 @@ func ReadFLACHeaders(flacFilePath string) ([]byte, error) {
 		}
 
 		blockLength := int(binary.BigEndian.Uint32(append([]byte{0}, lengthBytes...)))
+
+		// Correctly handle cases where blockLength is larger than the remaining file size
 		blockData := make([]byte, blockLength)
-		_, err = file.Read(blockData)
-		if err != nil {
-			return nil, fmt.Errorf("unexpected end of file while reading metadata block data")
+		bytesRead, err := file.Read(blockData)
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("error reading metadata block data: %v", err)
+		}
+
+		if bytesRead < blockLength {
+			// If we read fewer bytes than blockLength, adjust blockData accordingly
+			blockData = blockData[:bytesRead]
 		}
 
 		headers = append(headers, append(headerByte, append(lengthBytes, blockData...)...)...)
+
+		if err == io.EOF {
+			break // Exit loop if we've reached the end of the file
+		}
 	}
 
 	return headers, nil

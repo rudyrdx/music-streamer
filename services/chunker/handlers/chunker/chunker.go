@@ -1,176 +1,54 @@
 package chunker
 
 import (
-	"encoding/binary"
+	"bytes"
+	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 )
 
-func ChunkJob(app *pocketbase.PocketBase) {
+func ChunkJob(app *pocketbase.PocketBase, segmentTime float64, deleteOriginalFile bool) {
 	startTime := time.Now()
 
-	records, err := app.FindRecordsByFilter(
-		"UploadedFiles",
-		"processed = False",
-		"-created",
-		4,
-		0,
-	)
+	// Fetch records to process
+	records, err := app.FindRecordsByFilter("UploadedFiles", "processed = False", "-created", 4, 0)
 	if err != nil || len(records) == 0 {
+		app.Logger().Info("ChunkJob", "message", "No records to process", "error", err)
 		return
 	}
 
 	totalRecords := len(records)
-	errors := make([]string, 0)
-	chunkIDs := make([]string, 0)
+	errors := []string{}
+	chunkIDs := []string{}
 
+	// Get chunked files collection
 	collection, err := app.FindCollectionByNameOrId("ChunkedFiles")
 	if err != nil {
-		errors = append(errors, fmt.Sprintf(
-			"error finding collection ChunkedFiles: %v",
-			err,
-		))
+		app.Logger().Error("ChunkJob", "message", "Failed to find ChunkedFiles collection", "error", err)
+		return
 	}
 
+	// Process each record
 	for _, record := range records {
-		recordID := record.Id
-		flacFilePath := record.Get("file_path").(string)
-
-		// Create a directory for the chunks if needed
-		oldDir := strings.Split(flacFilePath, "/")[1]
-		if _, err := os.Stat(oldDir); os.IsNotExist(err) {
-			if mkErr := os.MkdirAll(oldDir, 0755); mkErr != nil {
-				errors = append(errors, fmt.Sprintf(
-					"%s error creating directory %s: %v",
-					recordID, oldDir, mkErr,
-				))
-				continue
-			}
-		}
-
-		// 1) Read total duration from FLAC
-		durationInSeconds, err := GetFlacDuration(flacFilePath)
-		if err != nil {
-			errors = append(errors,
-				fmt.Sprintf("%s error reading FLAC duration: %v",
-					recordID, err,
-				),
-			)
-			continue
-		}
-
-		// 2) Decide how long each chunk should be in seconds
-		//    (Customize this value or accept it as a parameter.)
-		segmentTime := 30.0 // e.g., 30 seconds
-
-		// 3) Use ffmpeg to segment by time, preserving FLAC data (no re‐encode).
-		//    -c copy means no quality loss.
-		//    -segment_time controls chunk length in seconds.
-		chunkPattern := filepath.Join(oldDir, "chunk_%03d.flac")
-
-		ffmpegCmd := exec.Command(
-			"ffmpeg",
-			"-i", flacFilePath,
-			"-c", "copy",
-			"-f", "segment",
-			"-segment_time", fmt.Sprintf("%.2f", segmentTime),
-			"-reset_timestamps", "1",
-			chunkPattern,
-		)
-		if runErr := ffmpegCmd.Run(); runErr != nil {
-			errors = append(errors, fmt.Sprintf(
-				"%s error chunking via ffmpeg: %v",
-				recordID, runErr,
-			))
-			continue
-		}
-
-		// 4) Gather the generated chunk files from oldDir
-		files, err := filepath.Glob(filepath.Join(oldDir, "chunk_*.flac"))
-		if err != nil {
-			errors = append(errors, fmt.Sprintf(
-				"%s error globbing chunk files: %v",
-				recordID, err,
-			))
-			continue
-		}
-
-		// 5) For each chunk file, figure out its theoretical start/end times
-		//    based on the chunk index, then store them in your DB.
-		//    “start_byte_offset” -> chunk start time
-		//    “end_byte_offset”   -> chunk end time
-		//    “chunk_size”        -> chunk duration
-		chunkOrder := 1
-		totalChunks := len(files)
-
-		for i, chunkFilePath := range files {
-			// Theoretical start time in seconds
-			startSec := float64(i) * segmentTime
-
-			// Theoretical end time (may be less than segmentTime for the last chunk)
-			endSec := float64(i+1) * segmentTime
-			if endSec > durationInSeconds {
-				endSec = durationInSeconds
-			}
-
-			chunkDuration := endSec - startSec
-
-			r := core.NewRecord(collection)
-			r.Set("file", record.Id)
-			r.Set("chunk_path", chunkFilePath)
-			r.Set("chunk_order", chunkOrder)
-			// Save times in “start_byte_offset” and “end_byte_offset”
-			r.Set("start_byte_offset", startSec)
-			r.Set("end_byte_offset", endSec)
-
-			// Save the chunk’s duration under “chunk_size”
-			r.Set("chunk_size", chunkDuration)
-
-			if err := app.Save(r); err != nil {
-				errors = append(errors, fmt.Sprintf(
-					"%s error saving chunk %d: %v",
-					recordID, chunkOrder, err,
-				))
-				continue
-			}
-			chunkOrder++
-			chunkIDs = append(chunkIDs, r.Id)
-		}
-
-		// 6) Mark record processed
-		record.Set("processed", true)
-		if err := app.Save(record); err != nil {
-			errors = append(errors, fmt.Sprintf(
-				"%s error saving record: %v",
-				recordID, err,
-			))
-			continue
-		}
-
-		// 7) (Optional) Remove original file if all is good
-		if err := os.Remove(flacFilePath); err != nil {
-			errors = append(errors, fmt.Sprintf(
-				"%s error removing file: %v",
-				recordID, err,
-			))
-			continue
+		if err := processRecord(app, record, collection, segmentTime, deleteOriginalFile, &chunkIDs, &errors); err != nil {
+			errors = append(errors, fmt.Sprintf("Record %s failed: %v", record.Id, err))
 		}
 	}
 
-	endTime := time.Since(startTime).Nanoseconds()
+	// Log execution summary
+	execTimeMs := float64(time.Since(startTime).Nanoseconds()) / 1e6
 	if len(errors) > 0 {
 		app.Logger().Error(
 			"ChunkJob",
 			"totalRecords", totalRecords,
-			"execTime(ms)", float64(endTime)/1e6,
+			"execTime(ms)", execTimeMs,
 			"chunkIds", chunkIDs,
 			"errors", errors,
 		)
@@ -178,97 +56,120 @@ func ChunkJob(app *pocketbase.PocketBase) {
 		app.Logger().Info(
 			"ChunkJob",
 			"totalRecords", totalRecords,
-			"execTime(ms)", float64(endTime)/1e6,
+			"execTime(ms)", execTimeMs,
 			"chunkIds", chunkIDs,
 		)
 	}
 }
-func FindFramePositions(data []byte) []int {
-	var framePositions []int
-	dataLen := len(data)
+func processRecord(app *pocketbase.PocketBase, record *core.Record, collection *core.Collection, segmentTime float64, deleteOriginalFile bool, chunkIDs *[]string, errors *[]string) error {
+	recordID := record.Id
+	flacFilePath := record.Get("file_path").(string)
 
-	for i := 0; i < dataLen-1; {
-		word := (uint16(data[i]) << 8) | uint16(data[i+1])
-		sync := (word >> 2) & 0x3FFF // Get top 14 bits
-		if sync == 0x3FFE {
-			// Found a frame sync code
-			framePositions = append(framePositions, i)
-			i += 2 // Move past the sync code
-		} else {
-			i++
-		}
+	// Ensure the output directory exists
+	outputDir := filepath.Dir(flacFilePath)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("error creating directory %s: %w", outputDir, err)
 	}
 
-	return framePositions
-}
-
-func ReadFLACHeaders(flacFilePath string) ([]byte, error) {
-	file, err := os.Open(flacFilePath)
+	// 1. Get the FLAC file's duration
+	durationInSeconds, err := GetFlacDuration(flacFilePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
-
-	// Read the "fLaC" marker
-	signature := make([]byte, 4)
-	_, err = file.Read(signature)
-	if err != nil || string(signature) != "fLaC" {
-		return nil, fmt.Errorf("not a valid FLAC file")
+		return fmt.Errorf("error reading FLAC duration: %w", err)
 	}
 
-	headers := signature
-	isLastMetadataBlock := false
+	// 2. Segment the file using FFmpeg
+	chunkPattern := filepath.Join(outputDir, "chunk_%03d.flac")
+	ffmpegCmd := exec.Command("ffmpeg", "-i", flacFilePath, "-c", "copy", "-f", "segment", "-segment_time", fmt.Sprintf("%.2f", segmentTime), "-reset_timestamps", "1", chunkPattern)
+	if err := ffmpegCmd.Run(); err != nil {
+		return fmt.Errorf("error chunking via ffmpeg: %w", err)
+	}
 
-	// Read metadata blocks
-	for !isLastMetadataBlock {
-		headerByte := make([]byte, 1)
-		_, err = file.Read(headerByte)
-		if err != nil {
-			return nil, fmt.Errorf("unexpected end of file while reading metadata headers")
-		}
+	// 3. Process each generated chunk
+	chunkFiles, err := filepath.Glob(filepath.Join(outputDir, "chunk_*.flac"))
+	if err != nil {
+		return fmt.Errorf("error globbing chunk files: %w", err)
+	}
 
-		headerInt := headerByte[0]
-		isLastMetadataBlock = (headerInt & 0x80) != 0 // Check if the last bit is set
-		lengthBytes := make([]byte, 3)
-		_, err = file.Read(lengthBytes)
-		if err != nil {
-			return nil, fmt.Errorf("unexpected end of file while reading metadata block length")
-		}
+	if len(chunkFiles) == 0 {
+		return fmt.Errorf("no chunks generated for file %s", flacFilePath)
+	}
 
-		blockLength := int(binary.BigEndian.Uint32(append([]byte{0}, lengthBytes...)))
-
-		// Correctly handle cases where blockLength is larger than the remaining file size
-		blockData := make([]byte, blockLength)
-		bytesRead, err := file.Read(blockData)
-		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("error reading metadata block data: %v", err)
-		}
-
-		if bytesRead < blockLength {
-			// If we read fewer bytes than blockLength, adjust blockData accordingly
-			blockData = blockData[:bytesRead]
-		}
-
-		headers = append(headers, append(headerByte, append(lengthBytes, blockData...)...)...)
-
-		if err == io.EOF {
-			break // Exit loop if we've reached the end of the file
+	for i, chunkFilePath := range chunkFiles {
+		if err := saveChunkRecord(app, collection, recordID, chunkFilePath, i, segmentTime, durationInSeconds, chunkIDs); err != nil {
+			*errors = append(*errors, fmt.Sprintf("Chunk %d failed to save: %v", i+1, err))
 		}
 	}
 
-	return headers, nil
+	// 4. Mark the original record as processed
+	record.Set("processed", true)
+	if err := app.Save(record); err != nil {
+		return fmt.Errorf("error saving record as processed: %w", err)
+	}
+
+	// 5. Optionally delete the original file
+	if deleteOriginalFile {
+		if err := os.Remove(flacFilePath); err != nil {
+			*errors = append(*errors, fmt.Sprintf("Error deleting original file %s: %v", flacFilePath, err))
+		}
+	}
+
+	return nil
 }
 
-// GetFlacDuration returns duration (in seconds) for a file using ffprobe.
+func saveChunkRecord(app *pocketbase.PocketBase, collection *core.Collection, recordID, chunkFilePath string, index int, segmentTime, durationInSeconds float64, chunkIDs *[]string) error {
+	// Calculate chunk start and end times
+	startSec := float64(index) * segmentTime
+	endSec := startSec + segmentTime
+	if endSec > durationInSeconds {
+		endSec = durationInSeconds
+	}
+	chunkDuration := endSec - startSec
+
+	// Create a new database record for this chunk
+	chunkRecord := core.NewRecord(collection)
+	chunkRecord.Set("file", recordID)
+	chunkRecord.Set("chunk_path", chunkFilePath)
+	chunkRecord.Set("chunk_order", index+1)
+	chunkRecord.Set("start_byte_offset", startSec)
+	chunkRecord.Set("end_byte_offset", endSec)
+	chunkRecord.Set("chunk_size", chunkDuration)
+
+	if err := app.Save(chunkRecord); err != nil {
+		return fmt.Errorf("error saving chunk record: %w", err)
+	}
+
+	*chunkIDs = append(*chunkIDs, chunkRecord.Id)
+	return nil
+}
+
+// GetFlacDuration returns the duration (in seconds) of a file using `ffprobe`.
 func GetFlacDuration(filePath string) (float64, error) {
-	cmd := exec.Command("ffprobe",
-	"-v", "error",
-	"-show_entries", "format=duration,size",
-	"-of", "json",
-	filePath,
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "json",
+		filePath,
 	)
 	var out bytes.Buffer
 	cmd.Stdout = &out
+
 	if err := cmd.Run(); err != nil {
-	return 0, err
+		return 0, fmt.Errorf("error running ffprobe: %w", err)
+	}
+
+	var ffprobeOutput struct {
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &ffprobeOutput); err != nil {
+		return 0, fmt.Errorf("error parsing ffprobe output: %w", err)
+	}
+
+	duration, err := strconv.ParseFloat(ffprobeOutput.Format.Duration, 64)
+	if err != nil {
+		return 0, fmt.Errorf("error converting duration to float: %w", err)
+	}
+	return duration, nil
 }

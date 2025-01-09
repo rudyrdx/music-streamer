@@ -34,7 +34,7 @@ func main() {
 	})
 
 	app.Cron().MustAdd("Chunk", "*/1 * * * *", func() {
-		chunker.ChunkJob(app)
+		chunker.ChunkJob(app, 10.0, true)
 	})
 
 	if err := app.Start(); err != nil {

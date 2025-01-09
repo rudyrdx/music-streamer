@@ -5,199 +5,184 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/rudyrdx/music-streamer/chunker/helpers"
 )
 
 func ChunkJob(app *pocketbase.PocketBase) {
-
-	start_time := time.Now()
+	startTime := time.Now()
 
 	records, err := app.FindRecordsByFilter(
-		"UploadedFiles",     // collection
-		"processed = False", // filter
-		"-created",          // sort
-		4,                   // limit
-		0,                   // offset
+		"UploadedFiles",
+		"processed = False",
+		"-created",
+		4,
+		0,
 	)
-	if err != nil {
+	if err != nil || len(records) == 0 {
 		return
 	}
 
-	if len(records) < 1 {
-		return
-	}
-	total_records := len(records)
+	totalRecords := len(records)
 	errors := make([]string, 0)
-	chunkIds := make([]string, 0)
+	chunkIDs := make([]string, 0)
+
 	collection, err := app.FindCollectionByNameOrId("ChunkedFiles")
 	if err != nil {
-		errors = append(errors, fmt.Sprintf("error finding collection ChunkedFiles: %v", err))
+		errors = append(errors, fmt.Sprintf(
+			"error finding collection ChunkedFiles: %v",
+			err,
+		))
 	}
 
 	for _, record := range records {
-		// Constants
-		record_id := record.Id
+		recordID := record.Id
 		flacFilePath := record.Get("file_path").(string)
-		const chunkSize = int(1 * 1024 * 1024) // 1 MB in bytes (as float64)
+
+		// Create a directory for the chunks if needed
 		oldDir := strings.Split(flacFilePath, "/")[1]
-
 		if _, err := os.Stat(oldDir); os.IsNotExist(err) {
-			err = os.MkdirAll(oldDir, 0755)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("%s error creating directory %s: %v", record_id, oldDir, err))
+			if mkErr := os.MkdirAll(oldDir, 0755); mkErr != nil {
+				errors = append(errors, fmt.Sprintf(
+					"%s error creating directory %s: %v",
+					recordID, oldDir, mkErr,
+				))
 				continue
 			}
 		}
 
-		headers, err := ReadFLACHeaders(flacFilePath)
+		// 1) Read total duration from FLAC
+		durationInSeconds, err := GetFlacDuration(flacFilePath)
 		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s error reading FLAC headers: %v", record_id, err))
+			errors = append(errors,
+				fmt.Sprintf("%s error reading FLAC duration: %v",
+					recordID, err,
+				),
+			)
 			continue
 		}
 
-		file, err := os.Open(flacFilePath)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s error opening file: %v", record_id, err))
+		// 2) Decide how long each chunk should be in seconds
+		//    (Customize this value or accept it as a parameter.)
+		segmentTime := 30.0 // e.g., 30 seconds
+
+		// 3) Use ffmpeg to segment by time, preserving FLAC data (no re‐encode).
+		//    -c copy means no quality loss.
+		//    -segment_time controls chunk length in seconds.
+		chunkPattern := filepath.Join(oldDir, "chunk_%03d.flac")
+
+		ffmpegCmd := exec.Command(
+			"ffmpeg",
+			"-i", flacFilePath,
+			"-c", "copy",
+			"-f", "segment",
+			"-segment_time", fmt.Sprintf("%.2f", segmentTime),
+			"-reset_timestamps", "1",
+			chunkPattern,
+		)
+		if runErr := ffmpegCmd.Run(); runErr != nil {
+			errors = append(errors, fmt.Sprintf(
+				"%s error chunking via ffmpeg: %v",
+				recordID, runErr,
+			))
 			continue
 		}
 
-		// Skip the headers
-		_, err = file.Seek(int64(len(headers)), io.SeekStart)
+		// 4) Gather the generated chunk files from oldDir
+		files, err := filepath.Glob(filepath.Join(oldDir, "chunk_*.flac"))
 		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s error seeking past headers: %v", record_id, err))
+			errors = append(errors, fmt.Sprintf(
+				"%s error globbing chunk files: %v",
+				recordID, err,
+			))
 			continue
 		}
 
-		audioData, err := io.ReadAll(file)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s error reading audio data: %v", record_id, err))
-			continue
-		}
-
-		framePositions := FindFramePositions(audioData)
-		if len(framePositions) == 0 {
-			errors = append(errors, fmt.Sprintf("%s no frame positions found", record_id))
-		}
-		fmt.Printf("Found %d frame positions.\n", len(framePositions))
-
-		currentFrameIndex := 0
+		// 5) For each chunk file, figure out its theoretical start/end times
+		//    based on the chunk index, then store them in your DB.
+		//    “start_byte_offset” -> chunk start time
+		//    “end_byte_offset”   -> chunk end time
+		//    “chunk_size”        -> chunk duration
 		chunkOrder := 1
-		for currentFrameIndex < len(framePositions) {
+		totalChunks := len(files)
+
+		for i, chunkFilePath := range files {
+			// Theoretical start time in seconds
+			startSec := float64(i) * segmentTime
+
+			// Theoretical end time (may be less than segmentTime for the last chunk)
+			endSec := float64(i+1) * segmentTime
+			if endSec > durationInSeconds {
+				endSec = durationInSeconds
+			}
+
+			chunkDuration := endSec - startSec
+
 			r := core.NewRecord(collection)
-			accumulatedSize := 0
-			startFrameIndex := currentFrameIndex
-
-			for accumulatedSize < chunkSize && currentFrameIndex < len(framePositions)-1 {
-				frameStart := framePositions[currentFrameIndex]
-				frameEnd := framePositions[currentFrameIndex+1]
-				frameLength := frameEnd - frameStart
-				accumulatedSize += frameLength
-				currentFrameIndex++
-			}
-
-			// Handle the last frame
-			if currentFrameIndex == len(framePositions)-1 {
-				frameStart := framePositions[currentFrameIndex]
-				frameEnd := len(audioData)
-				frameLength := frameEnd - frameStart
-				accumulatedSize += frameLength
-				currentFrameIndex++
-			}
-
-			// Extract frames
-			dataStart := framePositions[startFrameIndex]
-			var dataEnd int
-			if currentFrameIndex < len(framePositions) {
-				dataEnd = framePositions[currentFrameIndex]
-			} else {
-				dataEnd = len(audioData)
-			}
-			chunkData := audioData[dataStart:dataEnd]
-
-			// Write the chunk
-			chunkFileName := filepath.Join(oldDir, fmt.Sprintf("%s.flac", helpers.GenerateULID()))
-			chunkFile, err := os.Create(chunkFileName)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("%s error creating chunk file: %v", record_id, err))
-				continue
-			}
-
-			_, err = chunkFile.Write(headers)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("%s error writing headers to chunk file: %v", record_id, err))
-				continue
-			}
-
-			_, err = chunkFile.Write(chunkData)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("%s error writing chunk data to chunk file: %v", record_id, err))
-				continue
-			}
-
-			chunkFile.Close()
 			r.Set("file", record.Id)
-			r.Set("chunk_path", chunkFileName)
-			r.Set("start_byte_offset", dataStart)
-			r.Set("end_byte_offset", dataEnd)
+			r.Set("chunk_path", chunkFilePath)
 			r.Set("chunk_order", chunkOrder)
-			r.Set("chunk_size", chunkSize)
-			err = app.Save(r)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("%s error saving chunk %d: %v", record_id, chunkOrder, err))
+			// Save times in “start_byte_offset” and “end_byte_offset”
+			r.Set("start_byte_offset", startSec)
+			r.Set("end_byte_offset", endSec)
+
+			// Save the chunk’s duration under “chunk_size”
+			r.Set("chunk_size", chunkDuration)
+
+			if err := app.Save(r); err != nil {
+				errors = append(errors, fmt.Sprintf(
+					"%s error saving chunk %d: %v",
+					recordID, chunkOrder, err,
+				))
 				continue
 			}
 			chunkOrder++
-			chunkIds = append(chunkIds, r.Id)
+			chunkIDs = append(chunkIDs, r.Id)
 		}
 
+		// 6) Mark record processed
 		record.Set("processed", true)
-		err = app.Save(record)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s error saving record: %v", record_id, err))
+		if err := app.Save(record); err != nil {
+			errors = append(errors, fmt.Sprintf(
+				"%s error saving record: %v",
+				recordID, err,
+			))
 			continue
 		}
 
-		// Remove the original file
-		err = file.Close()
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s error closing file: %v", record_id, err))
-			continue
-		}
-
-		err = os.Remove(flacFilePath)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s error removing file: %v", record_id, err))
+		// 7) (Optional) Remove original file if all is good
+		if err := os.Remove(flacFilePath); err != nil {
+			errors = append(errors, fmt.Sprintf(
+				"%s error removing file: %v",
+				recordID, err,
+			))
 			continue
 		}
 	}
 
-	end_time := time.Since(start_time).Nanoseconds()
+	endTime := time.Since(startTime).Nanoseconds()
 	if len(errors) > 0 {
 		app.Logger().Error(
 			"ChunkJob",
-			"totalRecords", total_records,
-			"totalChunks", len(records),
-			"execTime", float64(end_time)/1000000,
-			"chunkIds", chunkIds,
+			"totalRecords", totalRecords,
+			"execTime(ms)", float64(endTime)/1e6,
+			"chunkIds", chunkIDs,
 			"errors", errors,
 		)
 	} else {
 		app.Logger().Info(
 			"ChunkJob",
-			"totalRecords", total_records,
-			"totalChunks", len(records),
-			"execTime", float64(end_time)/1000000,
-			"chunkIds", chunkIds,
+			"totalRecords", totalRecords,
+			"execTime(ms)", float64(endTime)/1e6,
+			"chunkIds", chunkIDs,
 		)
 	}
 }
-
 func FindFramePositions(data []byte) []int {
 	var framePositions []int
 	dataLen := len(data)
@@ -272,4 +257,18 @@ func ReadFLACHeaders(flacFilePath string) ([]byte, error) {
 	}
 
 	return headers, nil
+}
+
+// GetFlacDuration returns duration (in seconds) for a file using ffprobe.
+func GetFlacDuration(filePath string) (float64, error) {
+	cmd := exec.Command("ffprobe",
+	"-v", "error",
+	"-show_entries", "format=duration,size",
+	"-of", "json",
+	filePath,
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+	return 0, err
 }

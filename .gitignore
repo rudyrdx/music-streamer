@@ -6,3 +6,4 @@ services/chunker/mm/node_modules/.bin/link.cmd
 /services/chunker/mm/node_modules
 /services/chunker/mm
 services/chunker/mm/node_modules/@jridgewell/gen-mapping/dist/types/sourcemap-segment.d.ts
+/services/chunker/output_chunks

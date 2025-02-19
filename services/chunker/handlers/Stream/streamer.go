@@ -148,111 +148,6 @@ func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	return nil
 }
 
-type Range struct {
-	start, end int
-}
-
-type RangeHashMap struct {
-	data map[Range]interface{}
-}
-
-func NewRangedMap() *RangeHashMap {
-	return &RangeHashMap{
-		data: make(map[Range]interface{}),
-	}
-}
-
-func (r *RangeHashMap) Add(start, end int, value interface{}) error {
-	if start > end {
-		return fmt.Errorf("start cannot be greater than end")
-	}
-	r.data[Range{start, end}] = value
-	return nil
-}
-
-func (r *RangeHashMap) Get(num int) (interface{}, bool) {
-	for key, val := range r.data {
-		if num >= key.start && num <= key.end {
-			return val, true
-		}
-	}
-	return nil, false
-}
-
-func HandleChunkedStreamer(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
-
-	rnge := e.Request.Header.Get("Range")
-	param := e.Request.URL.Query().Get("id")
-
-	if rnge == "" || param == "" {
-		return e.String(400, "Invalid request")
-	}
-
-	// s := time.Now()
-	col, err := helpers.LookupFromCacheOrDB(c, "UploadedFiles", func() (*core.Collection, error) {
-		return app.FindCollectionByNameOrId("UploadedFiles")
-	}, cache.DefaultExpiration)
-	if err != nil {
-		return e.String(500, "Failed to find collection")
-	}
-
-	record, err := helpers.LookupFromCacheOrDB(c, param, func() (*core.Record, error) {
-		return app.FindRecordById(col, param)
-	}, cache.DefaultExpiration)
-	if err != nil {
-		return e.String(400, "Invalid request")
-	}
-
-	chunks, err := helpers.LookupFromCacheOrDB(c, "ChunkedFiles_"+record.Id, func() ([]*core.Record, error) {
-		return app.FindAllRecords("ChunkedFiles", dbx.HashExp{"file": record.Id})
-	}, cache.DefaultExpiration)
-	if err != nil {
-		return e.String(500, "Failed to find chunks")
-	}
-
-	if len(chunks) < 1 {
-		return e.String(500, "No chunks found")
-	}
-
-	//each chunk has startOffset and endOffset along with chunkPath
-	//we need to have a datastructure that allows quick lookup of chunk based on range
-	//a map of range to chunk
-
-	var chunkMap = NewRangedMap()
-	for _, chunk := range chunks {
-		startOffset := int64(chunk.GetInt("start_byte_offset"))
-		endOffset := int64(chunk.GetInt("end_byte_offset"))
-		chunkPath := chunk.Get("chunk_path").(string)
-		chunkMap.Add(int(startOffset), int(endOffset), string(chunkPath))
-	}
-
-	rangeStart, _, err := parseRange(rnge, float64(record.GetInt("file_size")))
-	if err != nil {
-		return e.String(416, "Invalid range")
-	}
-
-	path, t := chunkMap.Get(int(rangeStart) + 10)
-	if !t {
-		return e.String(500, "Failed to find chunk")
-	}
-
-	fileBytes, err := os.ReadFile(path.(string))
-	if err != nil {
-		return e.String(500, "Failed to read file")
-	}
-
-	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(fileBytes), len(fileBytes)))
-	e.Response.Header().Set("Accept-Ranges", "bytes")
-	e.Response.Header().Set("Content-Length", strconv.Itoa(len(fileBytes)))
-	e.Response.Header().Set("Content-Type", "audio/flac")
-	//add cors header
-	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
-	e.Response.WriteHeader(206)
-	e.Response.Write(fileBytes)
-	//hny
-	return nil
-}
-
 func parseRange(rnge string, fileSize float64) (int64, int64, error) {
 	// Example: "bytes=100-200"
 	if !strings.HasPrefix(rnge, "bytes=") {
@@ -370,6 +265,102 @@ func HandleChunkRequest(e *core.RequestEvent, app *pocketbase.PocketBase, c *cac
 	}
 	//hny
 	return nil
+}
+
+func Stream(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
+	// Parse the Range header
+	_range := e.Request.Header.Get("Range")
+	_id := e.Request.URL.Query().Get("id")
+
+	if _range == "" || _id == "" {
+		return e.String(400, "Invalid request")
+	}
+
+	startPos, err := getRange(_range)
+	if err != nil {
+		return e.String(400, "Invalid range")
+	}
+
+	// Retrieve the records for the requested file
+	var Records []*core.Record
+	recordsInterface, found := c.Get(_id)
+	if !found {
+		records, err := app.FindAllRecords("ChunkedFiles", dbx.HashExp{"file": _id})
+		if err != nil {
+			return e.String(500, "Failed to find records")
+		}
+		c.Set(_id, records, cache.DefaultExpiration)
+		Records = records
+	} else {
+		Records = recordsInterface.([]*core.Record)
+	}
+
+	if len(Records) == 0 {
+		return e.String(400, "Invalid request")
+	}
+
+	// Find the chunk containing the requested byte
+	var record *core.Record
+	for _, r := range Records {
+		start := int64(r.GetInt("start_byte_offset"))
+		end := int64(r.GetInt("end_byte_offset"))
+		if startPos >= start && startPos <= end {
+			record = r
+			break
+		}
+	}
+
+	if record == nil {
+		return e.String(416, "Range Not Satisfiable")
+	}
+
+	// Get the file details
+	fileSize := record.GetInt("file_size")
+	chunkPath := record.Get("chunk_path").(string)
+	rangeStart := int64(record.GetInt("start_byte_offset"))
+	rangeEnd := int64(record.GetInt("end_byte_offset"))
+
+	// Open the file and stream data
+	file, err := os.Open(chunkPath)
+	if err != nil {
+		return e.String(500, "Failed to open file")
+	}
+	defer file.Close()
+
+	// Set response headers
+	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, fileSize))
+	e.Response.Header().Set("Accept-Ranges", "bytes")
+	e.Response.Header().Set("Content-Length", strconv.Itoa(int(rangeEnd-rangeStart+1)))
+	e.Response.Header().Set("Content-Type", "audio/flac")
+	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
+	e.Response.WriteHeader(206)
+
+	// Stream the chunk data
+	if _, err := io.Copy(e.Response, file); err != nil {
+		fmt.Println("Streaming error:", err)
+		return e.String(500, "Failed to stream audio")
+	}
+
+	return nil
+}
+
+func getRange(r string) (int64, error) {
+	if !strings.HasPrefix(r, "bytes=") {
+		return 0, fmt.Errorf("invalid range format")
+	}
+
+	rangeParts := strings.TrimPrefix(r, "bytes=")
+	ranges := strings.Split(rangeParts, "-")
+	if len(ranges) != 2 {
+		return 0, fmt.Errorf("invalid range format")
+	}
+
+	start, err := strconv.ParseInt(ranges[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid start value")
+	}
+
+	return start, nil
 }
 
 //ok 1 approach that i can think is, we prepare a hashmap for the chunk ranges and ids, and we send the json

@@ -37,6 +37,10 @@ func CreateCollection() *core.Collection {
 		Name:     "chunk_size",
 		Required: true,
 	})
+	collection.Fields.Add(&core.NumberField{
+		Name:     "file_size",
+		Required: true,
+	})
 
 	collection.Fields.Add()
 

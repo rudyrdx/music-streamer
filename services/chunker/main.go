@@ -34,13 +34,11 @@ func main() {
 	})
 
 	app.Cron().MustAdd("Chunk", "*/1 * * * *", func() {
-		chunker.ChunkJob(app, 10.0, true)
+		mb_2 := 1024 * 1024 * 1
+		chunker.ChunkJob(app, int64(mb_2), true)
 	})
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
 	}
 }
-
-//instead of chunking, we open a pointer to that file, then we seek to the byte position and then provide that
-// this will become dynamic chunking which will slower.

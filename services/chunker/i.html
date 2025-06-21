@@ -3,9 +3,371 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>Music Streamer</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <style>
+        .song-item {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .song-item:hover {
+            background-color: #f8f9fa;
+        }
+        .song-item.active {
+            background-color: #e3f2fd;
+            border-left: 4px solid #2196f3;
+        }
+        .audio-player {
+            width: 100%;
+            margin-bottom: 20px;
+        }        .loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        .song-list-container {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 0.375rem;
+        }
+        .search-bar {
+            margin-bottom: 15px;
+        }
+    </style>
 </head>
 <body>
-    <audio src="http://127.0.0.1:3000/stream?id=i1s13o12f23768q" controls preload="metadata"></audio>
+    <div class="container mt-4">
+        <h2>Music Streamer</h2>
+        
+        <!-- Audio Player -->
+        <audio id="audioPlayer" class="audio-player" controls preload="metadata" type="audio/flac">
+            Your browser does not support the audio element.
+        </audio>
+
+        <div class="row">            <!-- Song List -->
+            <div class="col-md-4">
+                <h4>Songs</h4>
+                <div class="search-bar">
+                    <input type="text" id="searchInput" class="form-control" placeholder="Search songs..." onkeyup="searchSongs()">
+                </div>
+                <div id="songList" class="list-group song-list-container">
+                    <div class="text-center p-3">
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading songs...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metadata Display -->
+            <div class="col-md-8">
+                <div id="metadataSection" style="display: none;">
+                    <h4>Now Playing</h4>
+                    <div id="currentSong" class="alert alert-info"></div>
+
+                    <h5>File Information</h5>
+                    <div id="fileInfo" class="row g-2 mb-4"></div>
+
+                    <h5>Metadata</h5>
+                    <div id="metadata" class="row g-2 mb-4"></div>
+
+                    <h5>Album Art</h5>
+                    <div id="art"></div>
+                </div>
+
+                <div id="noSelection" class="text-center text-muted p-5">
+                    <h5>Select a song to view metadata and play</h5>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentSongs = [];
+        let currentSongId = null;
+
+        async function loadSongs() {
+            try {
+                const response = await fetch('http://127.0.0.1:3000/listallsongs');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const songs = await response.json();
+                currentSongs = songs;
+                displaySongs(songs);
+            } catch (error) {
+                console.error('Error loading songs:', error);
+                document.getElementById('songList').innerHTML = `
+                    <div class="alert alert-danger">
+                        Error loading songs: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function displaySongs(songs) {
+            const songList = document.getElementById('songList');
+            
+            if (songs.length === 0) {
+                songList.innerHTML = '<div class="alert alert-info">No songs available</div>';
+                return;
+            }
+
+            songList.innerHTML = songs.map(song => `
+                <div class="list-group-item song-item" data-id="${song.id}" onclick="selectSong('${song.id}')">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h6 class="mb-1">${escapeHtml(song.name)}</h6>
+                        <small>${formatFileSize(song.size)}</small>
+                    </div>
+                    <small class="text-muted">Added: ${formatDate(song.createdAt)}</small>
+                </div>
+            `).join('');
+        }
+
+        async function selectSong(songId) {
+            if (currentSongId === songId) return;
+            
+            // Update UI to show selection
+            document.querySelectorAll('.song-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            document.querySelector(`[data-id="${songId}"]`).classList.add('active');
+            
+            currentSongId = songId;
+            const song = currentSongs.find(s => s.id === songId);
+            
+            // Update audio player
+            const audioPlayer = document.getElementById('audioPlayer');
+            const streamUrl = `http://127.0.0.1:3000/stream?id=${songId}`;
+            audioPlayer.src = streamUrl;
+            
+            // Show current song info
+            document.getElementById('currentSong').textContent = `🎵 ${song.name}`;
+            document.getElementById('metadataSection').style.display = 'block';
+            document.getElementById('noSelection').style.display = 'none';
+            
+            // Load metadata
+            await loadMetadata(streamUrl);
+        }
+
+        async function loadMetadata(audioUrl) {
+            try {
+                // Show loading state
+                document.getElementById('fileInfo').innerHTML = '<div class="col-12 text-center"><div class="spinner-border spinner-border-sm"></div> Loading metadata...</div>';
+                document.getElementById('metadata').innerHTML = '';
+                document.getElementById('art').innerHTML = '';
+
+                const mm = await import('https://cdn.jsdelivr.net/npm/music-metadata@latest/+esm');
+                
+                // Fetch audio data with range header
+                const response = await fetch(audioUrl, {
+                    headers: {
+                        'Range': 'bytes=0-'
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const audioBlob = await response.blob();
+                const { common, format } = await mm.parseBlob(audioBlob);
+
+                displayMetadata(format, common);
+                
+            } catch (error) {
+                console.error('Error loading metadata:', error);
+                document.getElementById('fileInfo').innerHTML = `
+                    <div class="col-12 alert alert-warning">
+                        Could not load metadata: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function displayMetadata(format, common) {
+            const formatMapping = [
+                { id: "codec", label: "Codec" },
+                { id: "duration", label: "Duration" },
+                { id: "sampleRate", label: "Sample Rate" },
+                { id: "bitrate", label: "Bitrate" },
+                { id: "bitsPerSample", label: "Bits per Sample" }
+            ];
+
+            const commonMapping = [
+                { id: "artist", label: "Artist" },
+                { id: "title", label: "Title" },
+                { id: "album", label: "Album" },
+                { id: "albumartist", label: "Album Artist" },
+                { id: "year", label: "Year" },
+                { id: "genre", label: "Genre" }
+            ];
+
+            // Display format info
+            document.getElementById('fileInfo').innerHTML = formatMapping.map(item => {
+                let value = format[item.id];
+                if (item.id === 'duration' && value) {
+                    value = formatDuration(value);
+                } else if (item.id === 'bitrate' && value) {
+                    value = `${Math.round(value / 1000)} kbps`;
+                } else if (item.id === 'sampleRate' && value) {
+                    value = `${value} Hz`;
+                }
+                
+                return `
+                    <div class="col-sm-6">
+                        <strong>${item.label}:</strong> ${value || 'Unknown'}
+                    </div>
+                `;
+            }).join('');
+
+            // Display common metadata
+            document.getElementById('metadata').innerHTML = commonMapping.map(item => {
+                const value = common[item.id];
+                return `
+                    <div class="col-sm-6">
+                        <strong>${item.label}:</strong> ${value || 'Unknown'}
+                    </div>
+                `;
+            }).join('');            // Display album art
+            const artDiv = document.getElementById('art');
+            artDiv.innerHTML = '';
+            
+            if (common.picture && common.picture.length > 0) {
+                // Create a container for multiple images
+                const artContainer = document.createElement('div');
+                artContainer.className = 'row g-3';
+                
+                common.picture.forEach((picture, index) => {
+                    try {
+                        // Convert Uint8Array to base64 in chunks to avoid stack overflow
+                        const uint8Array = new Uint8Array(picture.data);
+                        let binary = '';
+                        const chunkSize = 8192; // Process in smaller chunks
+                        
+                        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+                            const chunk = uint8Array.slice(i, i + chunkSize);
+                            binary += String.fromCharCode.apply(null, chunk);
+                        }
+                        
+                        const base64String = btoa(binary);
+                        
+                        // Create a column for each image
+                        const colDiv = document.createElement('div');
+                        colDiv.className = 'col-md-6 col-lg-4';
+                        
+                        // Create card for better layout
+                        const cardDiv = document.createElement('div');
+                        cardDiv.className = 'card';
+                        
+                        const imgElement = document.createElement('img');
+                        imgElement.src = `data:${picture.format};base64,${base64String}`;
+                        imgElement.alt = getImageTypeLabel(picture.type || 'Unknown');
+                        imgElement.className = 'card-img-top';
+                        imgElement.style.height = '250px';
+                        imgElement.style.objectFit = 'cover';
+                        
+                        // Create card body with image info
+                        const cardBody = document.createElement('div');
+                        cardBody.className = 'card-body p-2';
+                        
+                        const imageLabel = document.createElement('h6');
+                        imageLabel.className = 'card-title mb-1';
+                        imageLabel.textContent = getImageTypeLabel(picture.type || 'Unknown');
+                        
+                        const imageInfo = document.createElement('small');
+                        imageInfo.className = 'text-muted';
+                        imageInfo.textContent = `${picture.format} • ${Math.round(uint8Array.length / 1024)}KB`;
+                        
+                        cardBody.appendChild(imageLabel);
+                        cardBody.appendChild(imageInfo);
+                        cardDiv.appendChild(imgElement);
+                        cardDiv.appendChild(cardBody);
+                        colDiv.appendChild(cardDiv);
+                        artContainer.appendChild(colDiv);
+                        
+                    } catch (error) {
+                        console.warn('Error processing album art:', error);
+                        const errorDiv = document.createElement('div');
+                        errorDiv.className = 'col-12';
+                        errorDiv.innerHTML = '<p class="text-muted">Error loading album art</p>';
+                        artContainer.appendChild(errorDiv);
+                    }
+                });
+                
+                artDiv.appendChild(artContainer);
+            } else {
+                artDiv.innerHTML = '<p class="text-muted">No album art available</p>';
+            }
+        }
+
+        function searchSongs() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const filteredSongs = currentSongs.filter(song => 
+                song.name.toLowerCase().includes(searchTerm)
+            );
+            displaySongs(filteredSongs);
+        }
+
+        // Utility functions
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatDate(dateString) {
+            return new Date(dateString).toLocaleDateString();
+        }
+
+        function formatDuration(seconds) {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = Math.floor(seconds % 60);
+            return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function getImageTypeLabel(type) {
+            const imageTypes = {
+                0: 'Other',
+                1: 'File Icon',
+                2: 'Other File Icon',
+                3: 'Front Cover',
+                4: 'Back Cover',
+                5: 'Leaflet Page',
+                6: 'Media Label',
+                7: 'Lead Artist',
+                8: 'Artist',
+                9: 'Conductor',
+                10: 'Band',
+                11: 'Composer',
+                12: 'Lyricist',
+                13: 'Recording Location',
+                14: 'During Recording',
+                15: 'During Performance',
+                16: 'Movie Screen Capture',
+                17: 'Bright Colored Fish',
+                18: 'Illustration',
+                19: 'Band Logo',
+                20: 'Publisher Logo'
+            };
+            
+            return imageTypes[type] || `Album Art ${typeof type === 'number' ? type : ''}`;
+        }
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', () => {
+            loadSongs();
+        });
+    </script>
 </body>
 </html>

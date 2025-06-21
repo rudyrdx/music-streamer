@@ -11,7 +11,7 @@ import (
 
 func SetupHandlers(se *core.ServeEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
 
-	se.Router.Bind(apis.BodyLimit(500 << 20))
+	se.Router.Bind(apis.BodyLimit(10 << 30))
 
 	se.Router.GET("/hello", func(re *core.RequestEvent) error {
 		return re.String(200, "Hello world!")
@@ -25,9 +25,9 @@ func SetupHandlers(se *core.ServeEvent, app *pocketbase.PocketBase, c *cache.Cac
 		return stream.Stream(e, app, c)
 	})
 
-	// se.Router.GET("/metadata", func(e *core.RequestEvent) error {
-	// 	return stream.GetChunkData(e, app, c)
-	// })
+	se.Router.GET("/listallsongs", func(e *core.RequestEvent) error {
+		return stream.ListAllSongs(e, app, c)
+	})
 	// se.Router.GET("/chunk", func(e *core.RequestEvent) error {
 	// 	return stream.HandleChunkRequest(e, app, c)
 	// })

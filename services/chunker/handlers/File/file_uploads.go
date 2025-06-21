@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/pocketbase/pocketbase/core"
@@ -19,17 +18,24 @@ type FileData struct {
 
 func HandleUpload(re *core.RequestEvent) error {
 
-	check_muiltipart := strings.Split(re.Request.Header.Get("Content-Type"), ";")[0] == "multipart/form-data"
+	headers := re.Request.Header
+	for key, values := range headers {
+		for _, value := range values {
+			fmt.Printf("Header: %s: %s\n", key, value)
+		}
+	}
+	// content_type := re.Request.Header.Get("Content-Type")
+	// check_muiltipart := strings.Split(content_type, ";")[0] == "multipart/form-data"
 
 	//the tmp file path is in the root folder of this main.go file
 	tmp_dir := "./tmp"
-	if !check_muiltipart {
-		return re.String(400, "Invalid request")
-	}
+	// if !check_muiltipart {
+	// 	return re.String(400, "Invalid request")
+	// }
 
 	files, err := re.FindUploadedFiles("file")
 	if err != nil {
-		return re.String(400, "Invalid request")
+		return re.String(400, err.Error())
 	}
 
 	file_len := len(files)

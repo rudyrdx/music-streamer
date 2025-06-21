@@ -10,3 +10,7 @@ services/chunker/mm/node_modules/@jridgewell/gen-mapping/dist/types/sourcemap-se
 /services/chunker/pb_data
 *.db
 *.exe
+/services/frontend
+/services/streamer
+/mainDB
+/orchestrators

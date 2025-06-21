@@ -14,178 +14,6 @@ import (
 	"github.com/rudyrdx/music-streamer/chunker/helpers"
 )
 
-func HandleStreamerCached(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
-
-	rnge := e.Request.Header.Get("Range")
-	param := e.Request.URL.Query().Get("id")
-	if rnge == "" || param == "" {
-		return e.String(400, "Invalid request")
-	}
-
-	// s := time.Now()
-	col, err := helpers.LookupFromCacheOrDB(c, "UploadedFiles", func() (*core.Collection, error) {
-		return app.FindCollectionByNameOrId("UploadedFiles")
-	}, cache.DefaultExpiration)
-	if err != nil {
-		return e.String(500, "Failed to find collection")
-	}
-
-	record, err := helpers.LookupFromCacheOrDB(c, param, func() (*core.Record, error) {
-		return app.FindRecordById(col, param)
-	}, cache.DefaultExpiration)
-	if err != nil {
-		return e.String(400, "Invalid request")
-	}
-
-	// end := time.Since(s).Nanoseconds()
-	// secs := float64(end) / 1000000000
-	// fmt.Println("Time taken to stream", secs)
-
-	file_path := record.Get("file_path").(string)
-	file_size := record.Get("file_size").(float64)
-
-	fileCacheKey := param + "file"
-	filePointerInterface, found := c.Get(fileCacheKey)
-	var filePointer *os.File
-	if !found {
-		// Open the file
-		filePointer, err = os.Open(file_path)
-		if err != nil {
-			return e.String(500, "Failed to open file")
-		}
-		// Cache the file pointer
-		c.Set(fileCacheKey, filePointer, cache.DefaultExpiration)
-	} else {
-		filePointer = filePointerInterface.(*os.File)
-	}
-
-	// Seek to the correct position based on the range
-	rangeStart, rangeEnd, err := parseRange(rnge, file_size)
-	if err != nil {
-		return e.String(416, "Invalid range")
-	}
-
-	// Move the file pointer to the start of the range
-	_, err = filePointer.Seek(rangeStart, 0)
-	if err != nil {
-		return e.String(500, "Failed to seek to range")
-	}
-
-	// Read the bytes for the requested range
-	buffer := make([]byte, rangeEnd-rangeStart)
-	_, err = filePointer.Read(buffer)
-	if err != nil {
-		return e.String(500, "Failed to read file")
-	}
-
-	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, int(file_size)))
-	e.Response.Header().Set("Accept-Ranges", "bytes")
-	e.Response.Header().Set("Content-Length", strconv.Itoa(len(buffer)))
-	e.Response.Header().Set("Content-Type", "audio/flac")
-	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
-	e.Response.WriteHeader(206)
-	e.Response.Write(buffer)
-
-	return nil
-}
-
-func HandleStreamer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
-
-	rnge := e.Request.Header.Get("Range")
-	param := e.Request.URL.Query().Get("id")
-	if rnge == "" || param == "" {
-		return e.String(400, "Invalid request")
-	}
-
-	// s := time.Now()
-	col, err := app.FindCollectionByNameOrId("UploadedFiles")
-	if err != nil {
-		return e.String(500, "Failed to find collection")
-	}
-
-	record, err := app.FindRecordById(col, param)
-	if err != nil {
-		return e.String(400, "Invalid request")
-	}
-	// end := time.Since(s).Nanoseconds()
-	// secs := float64(end) / 1000000000
-	// fmt.Println("Time taken to stream", secs)
-
-	file_path := record.Get("file_path").(string)
-	file_size := record.Get("file_size").(float64)
-
-	filePointer, err := os.Open(file_path)
-	if err != nil {
-		return e.String(500, "Failed to open file")
-	}
-
-	// Seek to the correct position based on the range
-	rangeStart, rangeEnd, err := parseRange(rnge, file_size)
-	if err != nil {
-		return e.String(416, "Invalid range")
-	}
-
-	// Move the file pointer to the start of the range
-	_, err = filePointer.Seek(rangeStart, 0)
-	if err != nil {
-		return e.String(500, "Failed to seek to range")
-	}
-
-	// Read the bytes for the requested range
-	buffer := make([]byte, rangeEnd-rangeStart)
-	_, err = filePointer.Read(buffer)
-	if err != nil {
-		return e.String(500, "Failed to read file")
-	}
-
-	e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, int(file_size)))
-	e.Response.Header().Set("Accept-Ranges", "bytes")
-	e.Response.Header().Set("Content-Length", strconv.Itoa(len(buffer)))
-	e.Response.Header().Set("Content-Type", "audio/flac")
-	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
-	e.Response.WriteHeader(206)
-	e.Response.Write(buffer)
-	return nil
-}
-
-func parseRange(rnge string, fileSize float64) (int64, int64, error) {
-	// Example: "bytes=100-200"
-	if !strings.HasPrefix(rnge, "bytes=") {
-		return 0, 0, fmt.Errorf("invalid range format")
-	}
-
-	// Remove the "bytes=" prefix and split the range
-	rangeParts := strings.TrimPrefix(rnge, "bytes=")
-	ranges := strings.Split(rangeParts, "-")
-	if len(ranges) != 2 {
-		return 0, 0, fmt.Errorf("invalid range format")
-	}
-
-	// Parse the start and end values
-	start, err := strconv.ParseInt(ranges[0], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid start value")
-	}
-
-	// If the end value is empty, it means we are requesting from the start to the end of the file
-	var end int64
-	if ranges[1] == "" {
-		end = int64(fileSize) - 1
-	} else {
-		end, err = strconv.ParseInt(ranges[1], 10, 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid end value")
-		}
-	}
-
-	// Validate the range
-	if start > end || start < 0 || end >= int64(fileSize) {
-		return 0, 0, fmt.Errorf("requested range out of bounds")
-	}
-
-	return start, end, nil
-}
-
 func GetChunkData(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
 	param := e.Request.URL.Query().Get("id")
 	if param == "" {
@@ -265,6 +93,36 @@ func HandleChunkRequest(e *core.RequestEvent, app *pocketbase.PocketBase, c *cac
 	}
 	//hny
 	return nil
+}
+
+func ListAllSongs(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
+	// Query all records from UploadedFiles
+	col, err := app.FindCollectionByNameOrId("UploadedFiles")
+	if err != nil {
+		return e.String(500, "Failed to find collection")
+	}
+
+	condition := dbx.HashExp{
+		"processed": true, // Only fetch processed files
+	}
+	records, err := app.FindAllRecords(col.Name, condition)
+	if err != nil {
+		return e.String(500, "Failed to fetch songs")
+	}
+
+	// Prepare a list of song metadata
+	songs := make([]map[string]interface{}, 0, len(records))
+	for _, r := range records {
+		songs = append(songs, map[string]interface{}{
+			"id":        r.Id,
+			"name":      r.Get("file_name"),
+			"size":      r.Get("file_size"),
+			"createdAt": r.Get("created"),
+			// Add more fields as needed
+		})
+	}
+	e.Response.Header().Set("Access-Control-Allow-Origin", "*")
+	return e.JSON(200, songs)
 }
 
 func Stream(e *core.RequestEvent, app *pocketbase.PocketBase, c *cache.Cache) error {
